@@ -209,6 +209,7 @@ void checkSimpleParsing() {
                           "uo=O\n";
     std::stringstream ss(zrmText);
     ShuangpinProfile profile(ss);
+    FCITX_ASSERT(profile.name() == "自定义");
     FCITX_ASSERT(profile.table() == zrm.table());
     FCITX_ASSERT(profile.validInput() == zrm.validInput());
 

@@ -43,6 +43,7 @@ public:
     ShuangpinProfile::ValidInputSetType validInputs_;
     ShuangpinProfile::ValidInputSetType validInitials_;
     ShuangpinProfile::TableType spTable_;
+    std::string name_;
 
     void buildShuangpinTable(const PinyinCorrectionProfile *correctionProfile) {
         // Set up valid inputs.
@@ -435,6 +436,7 @@ ShuangpinProfile::ShuangpinProfile(
 
         std::string_view option("方案名称=");
         if (fcitx::stringutils::consumePrefix(line, option)) {
+            d->name_ = std::string(line);
             isDefault = (line == "自然码" || line == "微软" || line == "紫光" ||
                          line == "拼音加加" || line == "中文之星" ||
                          line == "智能ABC" || line == "小鹤");
@@ -512,5 +514,10 @@ const ShuangpinProfile::ValidInputSetType &
 ShuangpinProfile::validInitial() const {
     FCITX_D();
     return d->validInitials_;
+}
+
+const std::string &ShuangpinProfile::name() const {
+    FCITX_D();
+    return d->name_;
 }
 } // namespace libime

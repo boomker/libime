@@ -10,6 +10,10 @@ For an in-repository example, see `test/testshuangpinprofile.cpp`.
 A shuangpin profile is a UTF-8 text file. In practice it is usually written
 with these sections:
 
+In Fcitx5 for Android, add "Custom Shuangpin" from the input method list with
+the add button, then edit the scheme from its settings page. That page creates
+and maintains this file for you, including explicit `[音节]` overrides.
+
 1. `[方案]`
 2. `[零声母标识]`
 3. `[声母]`

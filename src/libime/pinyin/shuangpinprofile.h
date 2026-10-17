@@ -49,6 +49,7 @@ public:
     const TableType &table() const;
     const ValidInputSetType &validInput() const;
     const ValidInputSetType &validInitial() const;
+    const std::string &name() const;
 
 private:
     void buildShuangpinTable();
