@@ -9,6 +9,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <fcitx-utils/log.h>
 #include "libime/core/historybigram.h"
 #include "libime/core/lattice.h"
@@ -106,6 +107,62 @@ void testHistory(PinyinIME &ime) {
     FCITX_ASSERT(kuaiIndexNew == kuaiIndex);
 }
 
+void testGroupedShuangpin(PinyinIME &ime) {
+    ime.setFuzzyFlags(PinyinFuzzyFlag::None);
+    auto ordinaryProfile =
+        std::make_shared<ShuangpinProfile>(ShuangpinBuiltinProfile::Xiaohe);
+    ime.setShuangpinProfile(ordinaryProfile);
+    std::unordered_map<char, char> mapping;
+    for (const std::string group :
+         {"q", "we", "rt", "y", "u", "io", "p", "a", "sd", "fg", "h", "jk",
+          "l;", "z", "xc", "v", "bn", "m"}) {
+        for (char key : group) {
+            mapping.emplace(key, group.front());
+        }
+    }
+    auto groupedProfile =
+        std::make_shared<ShuangpinProfile>(*ordinaryProfile, mapping);
+
+    PinyinContext ordinary(&ime);
+    ordinary.setUseShuangpin(true);
+    ordinary.type("nihc");
+    FCITX_ASSERT(ordinary.candidateSet().contains("你好"));
+    const auto ordinaryCandidates = ordinary.candidateSet();
+
+    PinyinContext grouped(&ime);
+    grouped.setUseShuangpin(true);
+    grouped.setShuangpinProfile(groupedProfile);
+    grouped.type("bihx");
+    FCITX_ASSERT(grouped.candidateSet().contains("你好"));
+    auto index = candidateIndex(grouped, "你好");
+    FCITX_ASSERT(grouped.candidateFullPinyin(index) == "ni'hao");
+    const auto groupedCandidates = grouped.candidateSet();
+    grouped.setShuangpinProfile(groupedProfile);
+    FCITX_ASSERT(grouped.userInput() == "bihx");
+    FCITX_ASSERT(grouped.candidateSet() == groupedCandidates);
+    FCITX_ASSERT(ordinary.userInput() == "nihc");
+    FCITX_ASSERT(ordinary.candidateSet() == ordinaryCandidates);
+    FCITX_ASSERT(ime.shuangpinProfile() == ordinaryProfile);
+    FCITX_ASSERT(ordinary.shuangpinProfile() == ordinaryProfile);
+
+    auto secondGroupedProfile =
+        std::make_shared<ShuangpinProfile>(*ordinaryProfile, mapping);
+    PinyinContext secondGrouped(&ime);
+    secondGrouped.setUseShuangpin(true);
+    secondGrouped.setShuangpinProfile(secondGroupedProfile);
+    secondGrouped.type("bihx");
+    FCITX_ASSERT(secondGrouped.candidateSet().contains("你好"));
+    grouped.setShuangpinProfile(secondGroupedProfile);
+    FCITX_ASSERT(grouped.empty());
+    FCITX_ASSERT(secondGrouped.userInput() == "bihx");
+    FCITX_ASSERT(ordinary.userInput() == "nihc");
+
+    grouped.setShuangpinProfile(nullptr);
+    FCITX_ASSERT(grouped.shuangpinProfile() == ordinaryProfile);
+    grouped.type("nihc");
+    FCITX_ASSERT(grouped.candidateSet().contains("你好"));
+}
+
 } // namespace
 
 int main() {
@@ -126,6 +183,7 @@ int main() {
     testPinyin(ime);
     testShuangpin(ime);
     testHistory(ime);
+    testGroupedShuangpin(ime);
 
     return 0;
 }

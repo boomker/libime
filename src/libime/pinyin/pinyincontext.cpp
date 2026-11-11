@@ -154,6 +154,7 @@ public:
     std::vector<std::vector<SelectedPinyin>> selected_;
 
     bool sp_ = false;
+    std::shared_ptr<const ShuangpinProfile> shuangpinProfile_;
     int maxSentenceLength_ = -1;
     PinyinIME *ime_;
     SegmentGraph segs_;
@@ -449,6 +450,23 @@ void PinyinContext::setUseShuangpin(bool sp) {
 bool PinyinContext::useShuangpin() const {
     FCITX_D();
     return d->sp_;
+}
+
+void PinyinContext::setShuangpinProfile(
+    std::shared_ptr<const ShuangpinProfile> profile) {
+    FCITX_D();
+    if (d->shuangpinProfile_ == profile) {
+        return;
+    }
+    clear();
+    d->shuangpinProfile_ = std::move(profile);
+}
+
+std::shared_ptr<const ShuangpinProfile>
+PinyinContext::shuangpinProfile() const {
+    FCITX_D();
+    return d->shuangpinProfile_ ? d->shuangpinProfile_
+                                : d->ime_->shuangpinProfile();
 }
 
 void PinyinContext::setMaxSentenceLength(int length) {
@@ -920,12 +938,11 @@ PinyinContext::preeditWithCursor(PinyinPreeditMode mode) const {
                     // that we'd like to keep the preedit as is. Otherwise,
                     // "qign" would be displayed as "qing", which would be
                     // confusing to user about what is actually being typed.
-                    syls = useShuangpin()
-                               ? PinyinEncoder::shuangpinToSyllables(
-                                     pinyin, *ime()->shuangpinProfile(),
-                                     PinyinFuzzyFlag::None)
-                               : PinyinEncoder::stringToSyllables(
-                                     pinyin, PinyinFuzzyFlag::None);
+                    syls = useShuangpin() ? PinyinEncoder::shuangpinToSyllables(
+                                                pinyin, *shuangpinProfile(),
+                                                PinyinFuzzyFlag::None)
+                                          : PinyinEncoder::stringToSyllables(
+                                                pinyin, PinyinFuzzyFlag::None);
                 }
                 std::string actualPinyin;
                 if (!syls.empty() && !syls.front().second.empty()) {

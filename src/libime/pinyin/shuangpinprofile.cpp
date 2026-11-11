@@ -494,6 +494,46 @@ ShuangpinProfile::ShuangpinProfile(
     d->buildShuangpinTable(correctionProfile);
 }
 
+ShuangpinProfile::ShuangpinProfile(
+    const ShuangpinProfile &source,
+    const std::unordered_map<char, char> &keyMapping)
+    : d_ptr(std::make_unique<ShuangpinProfilePrivate>()) {
+    FCITX_D();
+    d->name_ = source.name();
+    for (const auto &[input, syllables] : source.table()) {
+        std::string mapped;
+        for (char key : input) {
+            auto iter = keyMapping.find(key);
+            if (iter == keyMapping.end()) {
+                break;
+            }
+            mapped.push_back(iter->second);
+        }
+        if (mapped.size() != input.size()) {
+            continue;
+        }
+        auto &result = d->spTable_[mapped];
+        for (const auto &[syllable, flags] : syllables) {
+            auto [begin, end] = result.equal_range(syllable);
+            if (std::none_of(begin, end, [flags](const auto &item) {
+                    return item.second == flags;
+                })) {
+                result.emplace(syllable, flags);
+            }
+        }
+    }
+    for (char key : source.validInput()) {
+        if (auto iter = keyMapping.find(key); iter != keyMapping.end()) {
+            d->validInputs_.insert(iter->second);
+        }
+    }
+    for (char key : source.validInitial()) {
+        if (auto iter = keyMapping.find(key); iter != keyMapping.end()) {
+            d->validInitials_.insert(iter->second);
+        }
+    }
+}
+
 FCITX_DEFINE_DPTR_COPY_AND_DEFAULT_DTOR_AND_MOVE(ShuangpinProfile)
 
 // Deprecated, keep to only keep ABI stable.

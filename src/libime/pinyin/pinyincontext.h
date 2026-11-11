@@ -24,6 +24,7 @@
 namespace libime {
 class PinyinIME;
 class PinyinContextPrivate;
+class ShuangpinProfile;
 enum class PinyinPreeditMode;
 
 class LIBIMEPINYIN_EXPORT PinyinContext : public InputBuffer {
@@ -33,6 +34,11 @@ public:
 
     void setUseShuangpin(bool sp);
     bool useShuangpin() const;
+
+    /// Override this context's profile. nullptr restores the shared IME
+    /// profile. Changing the override clears only this context's composition.
+    void setShuangpinProfile(std::shared_ptr<const ShuangpinProfile> profile);
+    std::shared_ptr<const ShuangpinProfile> shuangpinProfile() const;
 
     void erase(size_t from, size_t to) override;
     void setCursor(size_t pos) override;

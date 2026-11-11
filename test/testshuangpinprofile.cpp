@@ -10,6 +10,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <fcitx-utils/log.h>
 #include "libime/core/segmentgraph.h"
@@ -539,6 +540,122 @@ uo=Y
     checkProfile(profile, false);
 }
 
+std::unordered_map<char, char> eighteenKeyMapping() {
+    std::unordered_map<char, char> result;
+    for (const std::string group :
+         {"q", "we", "rt", "y", "u", "io", "p", "a", "sd", "fg", "h", "jk",
+          "l;", "z", "xc", "v", "bn", "m"}) {
+        for (char key : group) {
+            result.emplace(key, group.front());
+        }
+    }
+    return result;
+}
+
+void checkGroupedProjection(const ShuangpinProfile &source) {
+    const auto mapping = eighteenKeyMapping();
+    const auto originalTable = source.table();
+    ShuangpinProfile grouped(source, mapping);
+    FCITX_ASSERT(source.table() == originalTable);
+    FCITX_ASSERT(grouped.name() == source.name());
+
+    ShuangpinProfile::TableType expected;
+    for (const auto &[input, syllables] : originalTable) {
+        std::string groupedInput;
+        for (char key : input) {
+            groupedInput += mapping.at(key);
+        }
+        auto &result = expected[groupedInput];
+        for (const auto &[syllable, flags] : syllables) {
+            auto [begin, end] = result.equal_range(syllable);
+            if (std::none_of(begin, end, [flags](const auto &entry) {
+                    return entry.second == flags;
+                })) {
+                result.emplace(syllable, flags);
+            }
+        }
+    }
+    FCITX_ASSERT(grouped.table() == expected);
+
+    std::set<char> expectedInputs;
+    for (char key : source.validInput()) {
+        expectedInputs.insert(mapping.at(key));
+    }
+    FCITX_ASSERT(grouped.validInput() == expectedInputs);
+    std::set<char> expectedInitials;
+    for (char key : source.validInitial()) {
+        expectedInitials.insert(mapping.at(key));
+    }
+    FCITX_ASSERT(grouped.validInitial() == expectedInitials);
+    for (char key : std::string("etodgk;cn")) {
+        FCITX_ASSERT(!grouped.validInput().contains(key));
+        FCITX_ASSERT(!grouped.table().contains(std::string{key}));
+    }
+    FCITX_ASSERT(grouped.table().at("j").contains(
+        PinyinSyllable(PinyinInitial::J, PinyinFinal::Invalid)));
+    FCITX_ASSERT(grouped.table().at("j").contains(
+        PinyinSyllable(PinyinInitial::K, PinyinFinal::Invalid)));
+
+    auto partial = PinyinEncoder::shuangpinToSyllables("b", grouped,
+                                                       PinyinFuzzyFlag::None);
+    FCITX_ASSERT(std::ranges::any_of(partial, [](const auto &item) {
+        return item.first == PinyinInitial::B;
+    }));
+    FCITX_ASSERT(std::ranges::any_of(partial, [](const auto &item) {
+        return item.first == PinyinInitial::N;
+    }));
+}
+
+void checkGroupedProfiles() {
+    PinyinCorrectionProfile correction(BuiltinPinyinCorrectionProfile::Qwerty);
+    for (auto builtin :
+         {ShuangpinBuiltinProfile::Xiaohe, ShuangpinBuiltinProfile::MS,
+          ShuangpinBuiltinProfile::Ziranma, ShuangpinBuiltinProfile::ABC,
+          ShuangpinBuiltinProfile::Ziguang,
+          ShuangpinBuiltinProfile::Zhongwenzhixing,
+          ShuangpinBuiltinProfile::PinyinJiajia, ShuangpinBuiltinProfile::GB}) {
+        checkGroupedProjection(ShuangpinProfile(builtin));
+        checkGroupedProjection(ShuangpinProfile(builtin, &correction));
+    }
+
+    const auto mapping = eighteenKeyMapping();
+    ShuangpinProfile xiaohe(ShuangpinBuiltinProfile::Xiaohe);
+    ShuangpinProfile grouped(xiaohe, mapping);
+    FCITX_ASSERT(grouped.table().at("aa").contains(
+        PinyinSyllable(PinyinInitial::Zero, PinyinFinal::A)));
+    FCITX_ASSERT(grouped.table().at("ab").contains(
+        PinyinSyllable(PinyinInitial::Zero, PinyinFinal::AN)));
+    checkSegments(PinyinEncoder::parseUserShuangpin("bihx'b", grouped,
+                                                    PinyinFuzzyFlag::None),
+                  {{"bi", "hx", "'", "b"}});
+
+    ShuangpinProfile microsoft(ShuangpinBuiltinProfile::MS);
+    ShuangpinProfile groupedMicrosoft(microsoft, mapping);
+    FCITX_ASSERT(groupedMicrosoft.table().at("bl").contains(
+        PinyinSyllable(PinyinInitial::N, PinyinFinal::ING)));
+
+    std::stringstream customInput;
+    customInput << "方案名称=Grouped test\n=*\nni=we\nmi=we\nhao=rt\n";
+    ShuangpinProfile custom(customInput);
+    checkGroupedProjection(custom);
+    ShuangpinProfile groupedCustom(custom, mapping);
+    FCITX_ASSERT(groupedCustom.table().at("ww").contains(
+        PinyinSyllable(PinyinInitial::N, PinyinFinal::I)));
+    FCITX_ASSERT(groupedCustom.table().at("ww").contains(
+        PinyinSyllable(PinyinInitial::M, PinyinFinal::I)));
+
+    ShuangpinProfile restricted(xiaohe, {{'j', 'q'}, {'k', 'q'}});
+    FCITX_ASSERT(restricted.validInput() == std::set<char>{'q'});
+    FCITX_ASSERT(restricted.validInitial() == std::set<char>{'q'});
+    for (const auto &[input, syllables] : restricted.table()) {
+        FCITX_ASSERT(input == "q" || input == "qq");
+    }
+    FCITX_ASSERT(restricted.table().at("q").contains(
+        PinyinSyllable(PinyinInitial::J, PinyinFinal::Invalid)));
+    FCITX_ASSERT(restricted.table().at("q").contains(
+        PinyinSyllable(PinyinInitial::K, PinyinFinal::Invalid)));
+}
+
 } // namespace
 
 int main() {
@@ -571,6 +688,7 @@ int main() {
     checkSimpleParsing();
     checkAdvanceParsing();
     checkAdvanceParsing2();
+    checkGroupedProfiles();
 
     return 0;
 }

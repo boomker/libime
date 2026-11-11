@@ -11,6 +11,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <fcitx-utils/macros.h>
 #include <libime/pinyin/libimepinyin_export.h>
 #include <libime/pinyin/pinyincorrectionprofile.h>
@@ -43,6 +44,15 @@ public:
                               const PinyinCorrectionProfile *correctionProfile);
     explicit ShuangpinProfile(std::istream &in,
                               const PinyinCorrectionProfile *correctionProfile);
+
+    /**
+     * Project an existing profile onto grouped keyboard keys.
+     *
+     * Every mapped key retains all of its syllables and fuzzy flags. Entries
+     * containing a key absent from keyMapping are omitted.
+     */
+    ShuangpinProfile(const ShuangpinProfile &source,
+                     const std::unordered_map<char, char> &keyMapping);
 
     FCITX_DECLARE_VIRTUAL_DTOR_COPY_AND_MOVE(ShuangpinProfile)
 

@@ -55,7 +55,7 @@ std::shared_ptr<const ShuangpinProfile>
 PinyinMatchState::shuangpinProfile() const {
     FCITX_D();
     if (d->context_->useShuangpin()) {
-        return d->context_->ime()->shuangpinProfile();
+        return d->context_->shuangpinProfile();
     }
     return {};
 }
