@@ -575,6 +575,20 @@ void checkGroupedProjection(const ShuangpinProfile &source) {
             }
         }
     }
+    // A grouped key may join both an exact spelling and a correction of that
+    // spelling. Exact syllables must remain exact regardless of source order.
+    for (auto &[input, syllables] : expected) {
+        const auto allSyllables = syllables;
+        std::erase_if(syllables, [&allSyllables](const auto &entry) {
+            if (entry.second == PinyinFuzzyFlag::None) {
+                return false;
+            }
+            auto [begin, end] = allSyllables.equal_range(entry.first);
+            return std::any_of(begin, end, [](const auto &item) {
+                return item.second == PinyinFuzzyFlag::None;
+            });
+        });
+    }
     FCITX_ASSERT(grouped.table() == expected);
 
     std::set<char> expectedInputs;
@@ -604,6 +618,35 @@ void checkGroupedProjection(const ShuangpinProfile &source) {
     FCITX_ASSERT(std::ranges::any_of(partial, [](const auto &item) {
         return item.first == PinyinInitial::N;
     }));
+}
+
+void checkGroupedCorrectionPrecedence() {
+    PinyinCorrectionProfile correction(BuiltinPinyinCorrectionProfile::Qwerty);
+    const auto mapping = eighteenKeyMapping();
+    for (auto builtin :
+         {ShuangpinBuiltinProfile::Xiaohe, ShuangpinBuiltinProfile::MS,
+          ShuangpinBuiltinProfile::Ziranma}) {
+        ShuangpinProfile source(builtin, &correction);
+        ShuangpinProfile grouped(source, mapping);
+        for (auto initial : {PinyinInitial::B, PinyinInitial::N}) {
+            const PinyinSyllable syllable(initial, PinyinFinal::I);
+            auto [begin, end] = grouped.table().at("bi").equal_range(syllable);
+            FCITX_ASSERT(std::distance(begin, end) == 1);
+            FCITX_ASSERT(begin->second == PinyinFuzzyFlag::None);
+        }
+        const auto syllables =
+            PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+                "bi", grouped, PinyinFuzzyFlag::Correction);
+        const auto ni = std::ranges::find_if(syllables, [](const auto &item) {
+            return item.first == PinyinInitial::N;
+        });
+        FCITX_ASSERT(ni != syllables.end());
+        const auto i = std::ranges::find_if(ni->second, [](const auto &item) {
+            return item.first == PinyinFinal::I;
+        });
+        FCITX_ASSERT(i != ni->second.end());
+        FCITX_ASSERT(i->second == PinyinFuzzyFlag::None);
+    }
 }
 
 void checkGroupedProfiles() {
@@ -689,6 +732,7 @@ int main() {
     checkAdvanceParsing();
     checkAdvanceParsing2();
     checkGroupedProfiles();
+    checkGroupedCorrectionPrecedence();
 
     return 0;
 }

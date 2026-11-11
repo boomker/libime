@@ -163,6 +163,43 @@ void testGroupedShuangpin(PinyinIME &ime) {
     FCITX_ASSERT(grouped.candidateSet().contains("你好"));
 }
 
+void testGroupedShuangpinWithCorrection(PinyinIME &ime) {
+    auto correction = std::make_shared<PinyinCorrectionProfile>(
+        BuiltinPinyinCorrectionProfile::Qwerty);
+    ime.setCorrectionProfile(correction);
+    ime.setFuzzyFlags(PinyinFuzzyFlag::Correction);
+    std::unordered_map<char, char> mapping;
+    for (const std::string group :
+         {"q", "we", "rt", "y", "u", "io", "p", "a", "sd", "fg", "h", "jk",
+          "l;", "z", "xc", "v", "bn", "m"}) {
+        for (char key : group) {
+            mapping.emplace(key, group.front());
+        }
+    }
+    for (const auto &[builtin, input] :
+         {std::pair{ShuangpinBuiltinProfile::Xiaohe, "bihx"},
+          std::pair{ShuangpinBuiltinProfile::MS, "bihj"},
+          std::pair{ShuangpinBuiltinProfile::Ziranma, "bihj"}}) {
+        auto source =
+            std::make_shared<ShuangpinProfile>(builtin, correction.get());
+        ime.setShuangpinProfile(source);
+        PinyinContext grouped(&ime);
+        grouped.setUseShuangpin(true);
+        grouped.setShuangpinProfile(
+            std::make_shared<ShuangpinProfile>(*source, mapping));
+        for (char key : std::string(input)) {
+            grouped.type(std::string(1, key));
+        }
+        FCITX_ASSERT(grouped.userInput() == input);
+        FCITX_ASSERT(grouped.candidateSet().contains("你好"));
+        const auto index = candidateIndex(grouped, "你好");
+        FCITX_ASSERT(grouped.candidateFullPinyin(index) == "ni'hao");
+        grouped.select(index);
+        FCITX_ASSERT(grouped.selected());
+        FCITX_ASSERT(grouped.sentence() == "你好");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -184,6 +221,7 @@ int main() {
     testShuangpin(ime);
     testHistory(ime);
     testGroupedShuangpin(ime);
+    testGroupedShuangpinWithCorrection(ime);
 
     return 0;
 }

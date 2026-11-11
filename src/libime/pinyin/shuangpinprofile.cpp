@@ -515,6 +515,20 @@ ShuangpinProfile::ShuangpinProfile(
         auto &result = d->spTable_[mapped];
         for (const auto &[syllable, flags] : syllables) {
             auto [begin, end] = result.equal_range(syllable);
+            // A correction may be visited before the exact spelling when
+            // different source keys collapse onto the same grouped key.
+            if (flags == PinyinFuzzyFlag::None) {
+                if (begin == end) {
+                    result.emplace(syllable, flags);
+                } else if (begin->second != PinyinFuzzyFlag::None) {
+                    result.erase(syllable);
+                    result.emplace(syllable, flags);
+                }
+                continue;
+            }
+            if (begin != end && begin->second == PinyinFuzzyFlag::None) {
+                continue;
+            }
             if (std::none_of(begin, end, [flags](const auto &item) {
                     return item.second == flags;
                 })) {

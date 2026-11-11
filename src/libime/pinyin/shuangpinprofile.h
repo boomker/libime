@@ -48,8 +48,9 @@ public:
     /**
      * Project an existing profile onto grouped keyboard keys.
      *
-     * Every mapped key retains all of its syllables and fuzzy flags. Entries
-     * containing a key absent from keyMapping are omitted.
+     * Every mapped key retains all of its syllables. Exact syllables replace
+     * their fuzzy alternatives; otherwise all distinct fuzzy flags remain.
+     * Entries containing a key absent from keyMapping are omitted.
      */
     ShuangpinProfile(const ShuangpinProfile &source,
                      const std::unordered_map<char, char> &keyMapping);
