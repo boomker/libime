@@ -43,6 +43,11 @@ public:
     std::shared_ptr<const PinyinCorrectionProfile> correctionProfile() const;
     size_t partialLongWordLimit() const;
 
+    bool hasSyllableConstraints() const;
+    bool
+    constrainSyllables(size_t from, size_t to,
+                       MatchedPinyinSyllablesWithFuzzyFlags &syllables) const;
+
 private:
     std::unique_ptr<PinyinMatchStatePrivate> d_ptr;
     FCITX_DECLARE_PRIVATE(PinyinMatchState);

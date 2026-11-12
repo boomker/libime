@@ -92,6 +92,13 @@ struct SelectedPinyin {
     SelectedPinyinType type_;
 };
 
+struct SelectedSyllable {
+    size_t from;
+    size_t to;
+    PinyinSyllable syllable;
+    std::string input;
+};
+
 struct CandidateDedupByPinyin {
     std::string text_;
     std::string fullPinyin_;
@@ -152,6 +159,7 @@ public:
         : QPtrHolder(q), ime_(ime), matchState_(q) {}
 
     std::vector<std::vector<SelectedPinyin>> selected_;
+    std::vector<SelectedSyllable> selectedSyllables_;
 
     bool sp_ = false;
     std::shared_ptr<const ShuangpinProfile> shuangpinProfile_;
@@ -167,6 +175,22 @@ public:
     mutable std::unordered_set<std::string> candidatesToCursorSet_;
     std::vector<fcitx::ScopedConnection> conn_;
     std::list<PinyinWordNode> contextWords_;
+
+    void resetMatching() {
+        lattice_.clear();
+        matchState_.clear();
+        segs_ = SegmentGraph();
+    }
+
+    void discardSyllablesFrom(size_t pos) {
+        const auto first = std::ranges::find_if(
+            selectedSyllables_,
+            [pos](const auto &syllable) { return syllable.to > pos; });
+        if (first != selectedSyllables_.end()) {
+            selectedSyllables_.erase(first, selectedSyllables_.end());
+            resetMatching();
+        }
+    }
 
     size_t alignCursorToNextSegment() const {
         FCITX_Q();
@@ -292,6 +316,10 @@ public:
             }
         }
 
+        if (!selectedSyllables_.empty()) {
+            // A selected word changes the offset of the remaining graph.
+            resetMatching();
+        }
         q->update();
     }
 
@@ -443,6 +471,10 @@ PinyinContext::~PinyinContext() {}
 
 void PinyinContext::setUseShuangpin(bool sp) {
     FCITX_D();
+    if (d->sp_ != sp && !d->selectedSyllables_.empty()) {
+        d->selectedSyllables_.clear();
+        d->resetMatching();
+    }
     d->sp_ = sp;
     d->matchState_.clear();
 }
@@ -467,6 +499,94 @@ PinyinContext::shuangpinProfile() const {
     FCITX_D();
     return d->shuangpinProfile_ ? d->shuangpinProfile_
                                 : d->ime_->shuangpinProfile();
+}
+
+size_t PinyinContext::nextSyllableOffset() const {
+    FCITX_D();
+    auto offset = selectedLength();
+    if (!d->selectedSyllables_.empty()) {
+        offset = std::max(offset, d->selectedSyllables_.back().to);
+    }
+    while (offset < size() && userInput()[offset] == '\'') {
+        offset++;
+    }
+    return offset;
+}
+
+bool PinyinContext::selectSyllable(size_t from, size_t to,
+                                   PinyinSyllable syllable) {
+    FCITX_D();
+    if (!useShuangpin() || from != nextSyllableOffset() || from >= to ||
+        to > size() || to - from > 2) {
+        return false;
+    }
+    const auto input = std::string_view(userInput()).substr(from, to - from);
+    if (input.find('\'') != std::string_view::npos) {
+        return false;
+    }
+    const auto matches = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+        input, *shuangpinProfile(), ime()->fuzzyFlags());
+    const auto valid =
+        std::ranges::any_of(matches, [&syllable](const auto &initial) {
+            return initial.first == syllable.initial() &&
+                   std::ranges::any_of(
+                       initial.second, [&syllable](const auto &final) {
+                           return final.first == syllable.final();
+                       });
+        });
+    if (!valid) {
+        return false;
+    }
+    d->selectedSyllables_.push_back({from, to, syllable, userInput()});
+    d->resetMatching();
+    update();
+    return true;
+}
+
+bool PinyinContext::cancelSyllable() {
+    FCITX_D();
+    if (d->selectedSyllables_.empty() || cursor() != size()) {
+        return false;
+    }
+    const auto &last = d->selectedSyllables_.back();
+    if (last.from < selectedLength() || last.input != userInput()) {
+        return false;
+    }
+    d->selectedSyllables_.pop_back();
+    d->resetMatching();
+    update();
+    return true;
+}
+
+bool PinyinContext::hasSyllableConstraints() const {
+    FCITX_D();
+    return !d->selectedSyllables_.empty();
+}
+
+bool PinyinContext::constrainSyllables(
+    size_t from, size_t to,
+    MatchedPinyinSyllablesWithFuzzyFlags &syllables) const {
+    FCITX_D();
+    for (const auto &selected : d->selectedSyllables_) {
+        if (from >= selected.to || to <= selected.from) {
+            continue;
+        }
+        // A confirmation fixes both its reading and its segment boundaries.
+        if (from != selected.from || to != selected.to) {
+            return false;
+        }
+        std::erase_if(syllables, [&selected](auto &initial) {
+            if (initial.first != selected.syllable.initial()) {
+                return true;
+            }
+            std::erase_if(initial.second, [&selected](const auto &final) {
+                return selected.syllable.final() != PinyinFinal::Invalid &&
+                       final.first != selected.syllable.final();
+            });
+            return initial.second.empty();
+        });
+    }
+    return true;
 }
 
 void PinyinContext::setMaxSentenceLength(int length) {
@@ -495,7 +615,12 @@ bool PinyinContext::typeImpl(const char *s, size_t length) {
         }
     }
     auto changed = cancelTill(cursor());
-    changed = InputBuffer::typeImpl(s, length) || changed;
+    const auto insertion = cursor();
+    const auto typed = InputBuffer::typeImpl(s, length);
+    if (typed) {
+        d->discardSyllablesFrom(insertion);
+    }
+    changed = typed || changed;
     if (changed) {
         update();
     }
@@ -507,11 +632,13 @@ void PinyinContext::erase(size_t from, size_t to) {
         return;
     }
 
+    FCITX_D();
+    d->discardSyllablesFrom(from);
     // check if erase everything
     if (from == 0 && to >= size()) {
-        FCITX_D();
         d->clearCandidates();
         d->selected_.clear();
+        d->selectedSyllables_.clear();
         d->lattice_.clear();
         d->matchState_.clear();
         d->segs_ = SegmentGraph();
@@ -704,8 +831,43 @@ void PinyinContext::update() {
         }
         SegmentGraph newGraph;
         if (auto spProfile = d->matchState_.shuangpinProfile()) {
-            newGraph = PinyinEncoder::parseUserShuangpin(
-                userInput().substr(start), *spProfile, d->ime_->fuzzyFlags());
+            if (d->selectedSyllables_.empty()) {
+                newGraph = PinyinEncoder::parseUserShuangpin(
+                    userInput().substr(start), *spProfile,
+                    d->ime_->fuzzyFlags());
+            } else {
+                newGraph = SegmentGraph(userInput().substr(start));
+                auto appendUnconfirmed = [&](size_t from, size_t to) {
+                    if (from == to) {
+                        return;
+                    }
+                    auto part = PinyinEncoder::parseUserShuangpin(
+                        userInput().substr(from, to - from), *spProfile,
+                        d->ime_->fuzzyFlags());
+                    for (size_t i = 0; i < part.size(); i++) {
+                        for (const auto &node : part.nodes(i)) {
+                            for (const auto &next : node.nexts()) {
+                                newGraph.addNext(from - start + node.index(),
+                                                 from - start + next.index());
+                            }
+                        }
+                    }
+                };
+                auto offset = start;
+                for (const auto &selected : d->selectedSyllables_) {
+                    if (selected.from < start) {
+                        continue;
+                    }
+                    appendUnconfirmed(offset, selected.from);
+                    // A confirmed partial syllable remains a separate segment
+                    // when more keys are appended, like an apostrophe
+                    // separator.
+                    newGraph.addNext(selected.from - start,
+                                     selected.to - start);
+                    offset = selected.to;
+                }
+                appendUnconfirmed(offset, size());
+            }
         } else {
             newGraph = PinyinEncoder::parseUserPinyin(
                 userInput().substr(start), d->ime_->correctionProfile().get(),

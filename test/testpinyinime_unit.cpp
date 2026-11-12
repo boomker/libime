@@ -200,6 +200,143 @@ void testGroupedShuangpinWithCorrection(PinyinIME &ime) {
     }
 }
 
+void testGroupedSyllableConfirmation(PinyinIME &ime) {
+    ime.setFuzzyFlags(PinyinFuzzyFlag::None);
+    auto source =
+        std::make_shared<ShuangpinProfile>(ShuangpinBuiltinProfile::Xiaohe);
+    ime.setShuangpinProfile(source);
+    std::unordered_map<char, char> mapping;
+    for (const std::string group :
+         {"q", "we", "rt", "y", "u", "io", "p", "a", "sd", "fg", "h", "jk",
+          "l;", "z", "xc", "v", "bn", "m"}) {
+        for (char key : group) {
+            mapping.emplace(key, group.front());
+        }
+    }
+    const auto profile = std::make_shared<ShuangpinProfile>(*source, mapping);
+    const PinyinSyllable bi(PinyinInitial::B, PinyinFinal::I);
+    const PinyinSyllable ni(PinyinInitial::N, PinyinFinal::I);
+    const PinyinSyllable hao(PinyinInitial::H, PinyinFinal::AO);
+    const PinyinSyllable hua(PinyinInitial::H, PinyinFinal::UA);
+    ime.dict()->addWord(PinyinDictionary::UserDict, "bi'hao", "比好");
+    ime.dict()->addWord(PinyinDictionary::UserDict, "bi'hua", "比划");
+    ime.dict()->addWord(PinyinDictionary::UserDict, "bi'ni", "比你");
+    ime.dict()->addWord(PinyinDictionary::UserDict, "ni'ni", "你你");
+
+    PinyinContext c(&ime);
+    c.setUseShuangpin(true);
+    c.setShuangpinProfile(profile);
+    c.type("bihx");
+    const auto before = c.candidateSet();
+    FCITX_ASSERT(before.contains("你好"));
+    FCITX_ASSERT(c.nextSyllableOffset() == 0);
+    FCITX_ASSERT(!c.selectSyllable(2, 4, hao));
+    FCITX_ASSERT(!c.selectSyllable(0, 4, bi));
+    FCITX_ASSERT(!c.selectSyllable(0, 2, hao));
+    FCITX_ASSERT(c.selectSyllable(0, 2, bi));
+    FCITX_ASSERT(c.userInput() == "bihx");
+    FCITX_ASSERT(c.nextSyllableOffset() == 2);
+    FCITX_ASSERT(!c.candidateSet().contains("你好"));
+    FCITX_ASSERT(c.candidateSet().contains("比好"));
+    FCITX_ASSERT(c.candidateSet().contains("比划"));
+    FCITX_ASSERT(!c.selectSyllable(0, 2, bi));
+    FCITX_ASSERT(c.selectSyllable(2, 4, hua));
+    FCITX_ASSERT(c.nextSyllableOffset() == 4);
+    FCITX_ASSERT(c.candidateSet().contains("比划"));
+    FCITX_ASSERT(!c.candidateSet().contains("比好"));
+    for (size_t i = 0; i < c.candidates().size(); i++) {
+        const auto pinyin = c.candidateFullPinyin(i);
+        FCITX_ASSERT(pinyin == "bi" || pinyin == "bi'hua") << pinyin;
+    }
+
+    // Newly typed keys are removed before the last confirmation is undone.
+    c.type("b");
+    FCITX_ASSERT(!c.cancelSyllable());
+    c.backspace();
+    FCITX_ASSERT(c.userInput() == "bihx");
+    FCITX_ASSERT(c.cancelSyllable());
+    FCITX_ASSERT(c.nextSyllableOffset() == 2);
+    FCITX_ASSERT(c.candidateSet().contains("比好"));
+    FCITX_ASSERT(c.cancelSyllable());
+    FCITX_ASSERT(c.nextSyllableOffset() == 0);
+    FCITX_ASSERT(c.candidateSet() == before);
+    FCITX_ASSERT(!c.cancelSyllable());
+
+    // Repeated input keys must not reuse a different position's reading.
+    c.clear();
+    c.type("bibi");
+    FCITX_ASSERT(c.selectSyllable(0, 2, bi));
+    FCITX_ASSERT(c.selectSyllable(2, 4, ni));
+    FCITX_ASSERT(c.candidateSet().contains("比你"));
+    FCITX_ASSERT(c.candidateFullPinyin(candidateIndex(c, "比你")) == "bi'ni");
+    c.clear();
+    FCITX_ASSERT(c.nextSyllableOffset() == 0);
+    c.type("bibi");
+    FCITX_ASSERT(c.selectSyllable(0, 2, ni));
+    FCITX_ASSERT(c.selectSyllable(2, 4, ni));
+    FCITX_ASSERT(c.nextSyllableOffset() == 4);
+    FCITX_ASSERT(c.candidateSet().contains("你你"));
+
+    // Moving the cursor preserves constraints; an edit invalidates the
+    // intersected confirmation and every confirmation after it.
+    c.clear();
+    c.type("bihx");
+    FCITX_ASSERT(c.selectSyllable(0, 2, bi));
+    FCITX_ASSERT(c.selectSyllable(2, 4, hao));
+    c.setCursor(3);
+    FCITX_ASSERT(c.nextSyllableOffset() == 4);
+    FCITX_ASSERT(!c.cancelSyllable());
+    c.type("x");
+    FCITX_ASSERT(c.nextSyllableOffset() == 2);
+    c.erase(1, 2);
+    FCITX_ASSERT(c.nextSyllableOffset() == 0);
+
+    // Separators and word selection do not shift the absolute constraints.
+    c.clear();
+    c.type("bi'hx");
+    FCITX_ASSERT(c.selectSyllable(0, 2, bi));
+    FCITX_ASSERT(c.nextSyllableOffset() == 3);
+    FCITX_ASSERT(c.selectSyllable(3, 5, hua));
+    selectCandidate(c, "比");
+    FCITX_ASSERT(c.selectedLength() == 2);
+    FCITX_ASSERT(c.nextSyllableOffset() == 5);
+    FCITX_ASSERT(c.candidateSet().contains("划"));
+    FCITX_ASSERT(!c.candidateSet().contains("好"));
+    FCITX_ASSERT(c.cancelSyllable());
+    FCITX_ASSERT(c.nextSyllableOffset() == 3);
+    FCITX_ASSERT(!c.cancelSyllable());
+    c.cancel();
+    FCITX_ASSERT(c.cancelSyllable());
+    FCITX_ASSERT(c.nextSyllableOffset() == 0);
+
+    // Confirming a single initial fixes its boundary before new keys arrive.
+    c.clear();
+    c.type("b");
+    FCITX_ASSERT(c.selectSyllable(
+        0, 1, PinyinSyllable(PinyinInitial::B, PinyinFinal::Invalid)));
+    c.type("hx");
+    FCITX_ASSERT(c.userInput() == "bhx");
+    FCITX_ASSERT(c.nextSyllableOffset() == 1);
+    FCITX_ASSERT(c.candidateSet().contains("比划"));
+    FCITX_ASSERT(c.selectSyllable(1, 3, hua));
+    FCITX_ASSERT(c.nextSyllableOffset() == 3);
+    FCITX_ASSERT(c.candidateSet().contains("比划"));
+    FCITX_ASSERT(c.cancelSyllable());
+    FCITX_ASSERT(!c.cancelSyllable());
+    c.backspace();
+    c.backspace();
+    FCITX_ASSERT(c.userInput() == "b");
+    FCITX_ASSERT(c.cancelSyllable());
+
+    c.clear();
+    c.type("bihx");
+    FCITX_ASSERT(c.selectSyllable(0, 2, bi));
+    c.setShuangpinProfile(nullptr);
+    FCITX_ASSERT(c.empty());
+    FCITX_ASSERT(c.nextSyllableOffset() == 0);
+    FCITX_ASSERT(!c.cancelSyllable());
+}
+
 } // namespace
 
 int main() {
@@ -222,6 +359,7 @@ int main() {
     testHistory(ime);
     testGroupedShuangpin(ime);
     testGroupedShuangpinWithCorrection(ime);
+    testGroupedSyllableConfirmation(ime);
 
     return 0;
 }

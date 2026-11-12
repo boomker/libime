@@ -221,7 +221,15 @@ public:
           flags_(matchState->fuzzyFlags()),
           spProfile_(matchState->shuangpinProfile()),
           correctionProfile_(matchState->correctionProfile()),
-          partialLongWordLimit_(matchState->partialLongWordLimit()) {}
+          partialLongWordLimit_(matchState->partialLongWordLimit()),
+          matchState_(matchState) {
+        // Identical keys at different positions may have different confirmed
+        // syllables. The string-only caches cannot distinguish those matches.
+        if (matchState->hasSyllableConstraints()) {
+            nodeCacheMap_ = nullptr;
+            matchCacheMap_ = nullptr;
+        }
+    }
 
     explicit PinyinMatchContext(
         const SegmentGraph &graph, const GraphMatchCallback &callback,
@@ -244,6 +252,7 @@ public:
     std::shared_ptr<const ShuangpinProfile> spProfile_;
     std::shared_ptr<const PinyinCorrectionProfile> correctionProfile_;
     size_t partialLongWordLimit_ = 0;
+    const PinyinMatchState *matchState_ = nullptr;
 };
 
 class PinyinDictionaryPrivate : fcitx::QPtrHolder<PinyinDictionary> {
@@ -526,12 +535,17 @@ void PinyinDictionaryPrivate::findMatchesBetween(
         return;
     }
 
-    const auto syls =
+    auto syls =
         context.spProfile_
             ? PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
                   pinyin, *context.spProfile_, context.flags_)
             : PinyinEncoder::stringToSyllablesWithFuzzyFlags(
                   pinyin, context.correctionProfile_.get(), context.flags_);
+    if (context.matchState_ &&
+        !context.matchState_->constrainSyllables(prevNode.index(),
+                                                 currentNode.index(), syls)) {
+        return;
+    }
     const MatchedPinyinPaths &prevMatchedPaths = matchedPathsMap[&prevNode];
     MatchedPinyinPaths newPaths;
     for (const auto &path : prevMatchedPaths) {

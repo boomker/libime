@@ -19,6 +19,7 @@
 #include <libime/core/languagemodel.h>
 #include <libime/core/lattice.h>
 #include <libime/pinyin/libimepinyin_export.h>
+#include <libime/pinyin/pinyinencoder.h>
 #include "libime/core/historybigram.h"
 
 namespace libime {
@@ -28,6 +29,8 @@ class ShuangpinProfile;
 enum class PinyinPreeditMode;
 
 class LIBIMEPINYIN_EXPORT PinyinContext : public InputBuffer {
+    friend class PinyinMatchState;
+
 public:
     PinyinContext(PinyinIME *ime);
     virtual ~PinyinContext();
@@ -39,6 +42,15 @@ public:
     /// profile. Changing the override clears only this context's composition.
     void setShuangpinProfile(std::shared_ptr<const ShuangpinProfile> profile);
     std::shared_ptr<const ShuangpinProfile> shuangpinProfile() const;
+
+    /// First unconfirmed syllable in the original input, skipping separators
+    /// and the prefix already selected as Chinese words.
+    size_t nextSyllableOffset() const;
+    /// Confirm the next shuangpin syllable without replacing its input keys.
+    bool selectSyllable(size_t from, size_t to, PinyinSyllable syllable);
+    /// Undo the last confirmation at the input end, after subsequent input
+    /// has been removed. Word selections must be cancelled separately.
+    bool cancelSyllable();
 
     void erase(size_t from, size_t to) override;
     void setCursor(size_t pos) override;
@@ -197,6 +209,10 @@ protected:
     bool typeImpl(const char *s, size_t length) override;
 
 private:
+    bool hasSyllableConstraints() const;
+    bool
+    constrainSyllables(size_t from, size_t to,
+                       MatchedPinyinSyllablesWithFuzzyFlags &syllables) const;
     void update();
     bool learnWord();
     std::unique_ptr<PinyinContextPrivate> d_ptr;

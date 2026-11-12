@@ -74,6 +74,20 @@ size_t PinyinMatchState::partialLongWordLimit() const {
     return d->context_->ime()->partialLongWordLimit();
 }
 
+bool PinyinMatchState::hasSyllableConstraints() const {
+    FCITX_D();
+    return d->context_->hasSyllableConstraints();
+}
+
+bool PinyinMatchState::constrainSyllables(
+    size_t from, size_t to,
+    MatchedPinyinSyllablesWithFuzzyFlags &syllables) const {
+    FCITX_D();
+    const auto offset = d->context_->selectedLength();
+    return d->context_->constrainSyllables(from + offset, to + offset,
+                                           syllables);
+}
+
 void PinyinMatchState::discardDictionary(size_t idx) {
     FCITX_D();
     d->matchCacheMap_.erase(d->context_->ime()->dict()->trie(idx));
