@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 #include "pinyinime.h"
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -53,6 +54,7 @@ public:
     size_t beamSize_ = Decoder::beamSizeDefault;
     size_t frameSize_ = Decoder::frameSizeDefault;
     size_t partialLongWordLimit_ = 0;
+    size_t partialSpLength_ = 4;
     size_t wordCandidateLimit_ = 15;
     float maxDistance_ = std::numeric_limits<float>::max();
     float minPath_ = -std::numeric_limits<float>::max();
@@ -150,6 +152,20 @@ void PinyinIME::setPartialLongWordLimit(size_t n) {
     FCITX_D();
     if (d->partialLongWordLimit_ != n) {
         d->partialLongWordLimit_ = n;
+        emit<PinyinIME::optionChanged>();
+    }
+}
+
+size_t PinyinIME::partialSpLength() const {
+    FCITX_D();
+    return d->partialSpLength_;
+}
+
+void PinyinIME::setPartialSpLength(size_t n) {
+    FCITX_D();
+    n = std::clamp(n, size_t{2}, size_t{4});
+    if (d->partialSpLength_ != n) {
+        d->partialSpLength_ = n;
         emit<PinyinIME::optionChanged>();
     }
 }

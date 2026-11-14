@@ -361,6 +361,14 @@ PinyinEncoder::parseUserPinyin(std::string userPinyin,
 SegmentGraph PinyinEncoder::parseUserShuangpin(std::string userPinyin,
                                                const ShuangpinProfile &sp,
                                                PinyinFuzzyFlags flags) {
+    return parseUserShuangpin(std::move(userPinyin), sp, flags, 4);
+}
+
+SegmentGraph PinyinEncoder::parseUserShuangpin(std::string userPinyin,
+                                               const ShuangpinProfile &sp,
+                                               PinyinFuzzyFlags flags,
+                                               size_t minPartialLength) {
+    minPartialLength = std::clamp(minPartialLength, size_t{2}, size_t{4});
     flags = flags.unset(PinyinFuzzyFlag::AdvancedTypo);
     SegmentGraph result{std::move(userPinyin)};
     auto pinyin = result.data();
@@ -421,7 +429,8 @@ SegmentGraph PinyinEncoder::parseUserShuangpin(std::string userPinyin,
         }
     }
 
-    if (pinyin.size() >= 4 && flags.test(PinyinFuzzyFlag::PartialSp)) {
+    if (pinyin.size() >= minPartialLength &&
+        flags.test(PinyinFuzzyFlag::PartialSp)) {
         size_t i = 0;
         while (i < pinyin.size()) {
             size_t start = i;
@@ -627,7 +636,7 @@ namespace {
 
 template <typename FuzzyValue, typename Adjuster>
 void getFuzzy(FuzzyPinyinSyllables<FuzzyValue> &syls, PinyinSyllable syl,
-              PinyinFuzzyFlags flags, bool isSp, const Adjuster &adjuster) {
+              PinyinFuzzyFlags flags, const Adjuster &adjuster) {
     // ng/gn is already handled by table
     boost::container::static_vector<std::tuple<PinyinInitial, PinyinFuzzyFlags>,
                                     2>
@@ -636,15 +645,19 @@ void getFuzzy(FuzzyPinyinSyllables<FuzzyValue> &syls, PinyinSyllable syl,
                                     10>
         finals{{syl.final(), PinyinFuzzyFlag::None}};
 
-    // for full pinyin {s,z,c} we also want them to match {sh,zh,ch}
-    if (syl.final() == PinyinFinal::Invalid && !isSp) {
-        if (syl.initial() == PinyinInitial::C) {
+    // Bare initials automatically match their retroflex/non-retroflex partner
+    // in both pinyin and shuangpin. Complete syllables still use the options.
+    if (syl.final() == PinyinFinal::Invalid) {
+        if (syl.initial() == PinyinInitial::C ||
+            syl.initial() == PinyinInitial::CH) {
             flags |= PinyinFuzzyFlag::C_CH;
         }
-        if (syl.initial() == PinyinInitial::Z) {
+        if (syl.initial() == PinyinInitial::Z ||
+            syl.initial() == PinyinInitial::ZH) {
             flags |= PinyinFuzzyFlag::Z_ZH;
         }
-        if (syl.initial() == PinyinInitial::S) {
+        if (syl.initial() == PinyinInitial::S ||
+            syl.initial() == PinyinInitial::SH) {
             flags |= PinyinFuzzyFlag::S_SH;
         }
     }
@@ -740,11 +753,16 @@ void getFuzzy(FuzzyPinyinSyllables<FuzzyValue> &syls, PinyinSyllable syl,
                     iter = std::prev(syls.end());
                 }
                 auto &finals = iter->second;
-                if (std::find_if(finals.begin(), finals.end(),
-                                 [final](auto &p) {
-                                     return p.first == final;
-                                 }) == finals.end()) {
-                    finals.emplace_back(final, adjuster(flags));
+                const auto value = adjuster(flags);
+                auto existing = std::find_if(
+                    finals.begin(), finals.end(),
+                    [final](const auto &p) { return p.first == final; });
+                if (existing == finals.end()) {
+                    finals.emplace_back(final, value);
+                } else if (value == FuzzyValue{}) {
+                    // A custom/grouped key may map to both initials directly.
+                    // Its exact alias takes precedence over an earlier fuzzy.
+                    existing->second = value;
                 }
             }
         }
@@ -765,7 +783,6 @@ stringToSyllablesImpl(std::string_view pinyinView, const PinyinMap &map,
              std::ranges::subrange(iterPair.first, iterPair.second)) {
             if (flags.test(item.flags())) {
                 getFuzzy(result, {item.initial(), item.final()}, flags,
-                         /*isSp=*/false,
                          [&adjuster, &item](PinyinFuzzyFlags flags) {
                              return adjuster(item.flags() | flags);
                          });
@@ -775,16 +792,14 @@ stringToSyllablesImpl(std::string_view pinyinView, const PinyinMap &map,
 
     auto iter = initialMap.right.find(pinyin);
     if (initialMap.right.end() != iter) {
-        getFuzzy(result, {iter->second, PinyinFinal::Invalid}, flags,
-                 /*isSp=*/false, adjuster);
+        getFuzzy(result, {iter->second, PinyinFinal::Invalid}, flags, adjuster);
     }
 
     if (pinyin.size() == 1 && fcitx::charutils::islower(pinyin[0]) &&
         flags.test(PinyinFuzzyFlag::Letter)) {
         getFuzzy(result,
                  {PinyinInitial::Zero, PinyinEncoder::letterToFinal(pinyin[0])},
-                 flags,
-                 /*isSp=*/false, [&adjuster](PinyinFuzzyFlags flags) {
+                 flags, [&adjuster](PinyinFuzzyFlags flags) {
                      return adjuster(flags | PinyinFuzzyFlag::Letter);
                  });
     }
@@ -865,7 +880,6 @@ shuangpinToSyllablesImpl(std::string_view pinyinView,
         for (const auto &p : iter->second) {
             if (flags.test(p.second)) {
                 getFuzzy(result, {p.first.initial(), p.first.final()}, flags,
-                         /*isSp=*/true,
                          [base = p.second, &adjuster](PinyinFuzzyFlags flags) {
                              return adjuster(flags | base);
                          });
@@ -879,8 +893,7 @@ shuangpinToSyllablesImpl(std::string_view pinyinView,
         bool isLower = fcitx::charutils::islower(pinyin[0]);
         getFuzzy(result,
                  {PinyinInitial::Zero, PinyinEncoder::letterToFinal(pinyin[0])},
-                 flags,
-                 /*isSp=*/true, [&adjuster, isLower](PinyinFuzzyFlags flags) {
+                 flags, [&adjuster, isLower](PinyinFuzzyFlags flags) {
                      if (isLower) {
                          flags |= PinyinFuzzyFlag::Letter;
                      }

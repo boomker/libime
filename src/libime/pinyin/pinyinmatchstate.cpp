@@ -48,7 +48,7 @@ void PinyinMatchState::discardNode(
 
 PinyinFuzzyFlags PinyinMatchState::fuzzyFlags() const {
     FCITX_D();
-    return d->context_->ime()->fuzzyFlags();
+    return d->context_->fuzzyFlags();
 }
 
 std::shared_ptr<const ShuangpinProfile>
@@ -63,7 +63,7 @@ PinyinMatchState::shuangpinProfile() const {
 std::shared_ptr<const PinyinCorrectionProfile>
 PinyinMatchState::correctionProfile() const {
     FCITX_D();
-    if (d->context_->ime()->fuzzyFlags().test(PinyinFuzzyFlag::Correction)) {
+    if (d->context_->fuzzyFlags().test(PinyinFuzzyFlag::Correction)) {
         return d->context_->ime()->correctionProfile();
     }
     return {};

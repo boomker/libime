@@ -42,6 +42,14 @@ public:
     size_t partialLongWordLimit() const;
     void setPartialLongWordLimit(size_t n);
     /**
+     * \brief Minimum number of keys before partial shuangpin is allowed.
+     *
+     * When partial shuangpin is enabled, an input shorter than this many
+     * keys is still parsed as normal shuangpin. The value is clamped to 2-4.
+     */
+    size_t partialSpLength() const;
+    void setPartialSpLength(size_t n);
+    /**
      * \brief The maximum number of candidates that is a word.
      *
      * Limit the non single character candidates to avoid need to scroll/next

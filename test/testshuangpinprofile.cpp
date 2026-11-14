@@ -162,7 +162,8 @@ void checkSimpleParsing() {
         auto partialSp = PinyinEncoder::shuangpinToSyllables(
             "z", zrm, PinyinFuzzyFlag::None);
         MatchedPinyinSyllables expected{
-            {PinyinInitial::Z, {{PinyinFinal::Invalid, false}}}};
+            {PinyinInitial::Z, {{PinyinFinal::Invalid, false}}},
+            {PinyinInitial::ZH, {{PinyinFinal::Invalid, true}}}};
         FCITX_ASSERT(partialSp == expected) << partialSp;
     }
 

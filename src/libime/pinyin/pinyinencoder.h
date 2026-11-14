@@ -257,6 +257,10 @@ public:
     static SegmentGraph parseUserShuangpin(std::string pinyin,
                                            const ShuangpinProfile &sp,
                                            PinyinFuzzyFlags flags);
+    static SegmentGraph parseUserShuangpin(std::string pinyin,
+                                           const ShuangpinProfile &sp,
+                                           PinyinFuzzyFlags flags,
+                                           size_t minPartialLength);
 
     /**
      * @brief Encode a quote separated pinyin string.

@@ -12,6 +12,7 @@
 #include <limits>
 #include <list>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -162,6 +163,7 @@ public:
     std::vector<SelectedSyllable> selectedSyllables_;
 
     bool sp_ = false;
+    bool correctionEnabled_ = true;
     std::shared_ptr<const ShuangpinProfile> shuangpinProfile_;
     int maxSentenceLength_ = -1;
     PinyinIME *ime_;
@@ -221,6 +223,112 @@ public:
         candidatesToCursorNeedUpdate_ = false;
         candidatesSet_.clear();
         candidatesToCursorSet_.clear();
+    }
+
+    // Whether the whole input can be parsed as valid 2-key shuangpin
+    // syllables. If so, partial shuangpin should not be promoted.
+    bool hasFullShuangpinParse() const {
+        std::vector<bool> reachable(segs_.size() + 1, false);
+        reachable[0] = true;
+        for (size_t i = 0; i < segs_.size(); i++) {
+            if (!reachable[i]) {
+                continue;
+            }
+            for (const auto &node : segs_.nodes(i)) {
+                for (const auto &next : node.nexts()) {
+                    if (next.index() - node.index() == 2) {
+                        reachable[next.index()] = true;
+                    }
+                }
+            }
+        }
+        return reachable[segs_.size()];
+    }
+
+    // A candidate that consumes the whole input with one key per segment,
+    // i.e. the bare initial abbreviation.
+    bool isPartialShuangpinCandidate(const SentenceResult &candidate) const {
+        if (candidate.sentence().empty()) {
+            return false;
+        }
+        const auto &back = candidate.sentence().back();
+        if (candidate.sentence().front()->from()->index() != 0 ||
+            back->to()->index() != segs_.size()) {
+            return false;
+        }
+        for (const auto *node : candidate.sentence()) {
+            const auto &path = node->path();
+            // Long-word completion is not an initial abbreviation.
+            if (node->as<PinyinLatticeNode>().encodedPinyin().size() !=
+                (path.size() - 1) * 2) {
+                return false;
+            }
+            for (size_t i = 1; i < path.size(); i++) {
+                if (path[i]->index() - path[i - 1]->index() != 1) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    std::optional<CandidateDedupByPinyin> preferredPartialShuangpin() const {
+        FCITX_Q();
+        if (candidates_.empty() || !q->useShuangpin() ||
+            !selectedSyllables_.empty() || needCandidatesToCursor() ||
+            !q->fuzzyFlags().test(PinyinFuzzyFlag::PartialSp)) {
+            return std::nullopt;
+        }
+        const std::string &keys = segs_.data();
+        if (keys.size() < ime_->partialSpLength() ||
+            keys.find('\'') != std::string::npos || hasFullShuangpinParse()) {
+            return std::nullopt;
+        }
+        const SentenceResult *bestPartial = nullptr;
+        const SentenceResult *bestLearned = nullptr;
+        for (const auto &candidate : candidates_) {
+            if (hasCorrection(candidate)) {
+                continue;
+            }
+            if (isPartialShuangpinCandidate(candidate) &&
+                (!bestPartial || candidate.score() > bestPartial->score())) {
+                bestPartial = &candidate;
+            }
+            // Normal committed history provides persistence and respects the
+            // engine's learning switch. Two uses of the same two-Han word
+            // override the abbreviation's initial preference.
+            if (candidate.size() != 1 ||
+                candidateSelectTo(candidate) != segs_.size()) {
+                continue;
+            }
+            const auto *node = candidate.sentence().front();
+            const auto &pinyin = node->as<PinyinLatticeNode>().encodedPinyin();
+            const auto &word = node->word();
+            if (node->from()->index() != 0 || pinyin.size() != 4 ||
+                fcitx::utf8::length(word) != 2 ||
+                ime_->model()->history().rawUnigramFrequency({word, pinyin}) <
+                    2) {
+                continue;
+            }
+            const auto characters = fcitx::utf8::MakeUTF8StringViewRange(word);
+            const bool isHan = std::all_of(
+                characters.begin(), characters.end(), [](auto character) {
+                    const auto code = fcitx::utf8::getChar(character);
+                    return (code >= 0x3400 && code <= 0x4DBF) ||
+                           (code >= 0x4E00 && code <= 0x9FFF) ||
+                           (code >= 0xF900 && code <= 0xFAFF) ||
+                           (code >= 0x20000 && code <= 0x3FFFF);
+                });
+            if (isHan &&
+                (!bestLearned || candidate.score() > bestLearned->score())) {
+                bestLearned = &candidate;
+            }
+        }
+        if (!bestPartial) {
+            return std::nullopt;
+        }
+        return candidateDedupByPinyin(bestLearned ? *bestLearned
+                                                  : *bestPartial);
     }
 
     void updateCandidatesToCursor() const {
@@ -484,6 +592,23 @@ bool PinyinContext::useShuangpin() const {
     return d->sp_;
 }
 
+PinyinFuzzyFlags PinyinContext::fuzzyFlags() const {
+    FCITX_D();
+    auto flags = d->ime_->fuzzyFlags();
+    return d->correctionEnabled_ ? flags
+                                 : flags.unset(PinyinFuzzyFlag::Correction);
+}
+
+void PinyinContext::setCorrectionEnabled(bool enabled) {
+    FCITX_D();
+    if (d->correctionEnabled_ == enabled) {
+        return;
+    }
+    d->correctionEnabled_ = enabled;
+    d->resetMatching();
+    update();
+}
+
 void PinyinContext::setShuangpinProfile(
     std::shared_ptr<const ShuangpinProfile> profile) {
     FCITX_D();
@@ -525,7 +650,7 @@ bool PinyinContext::selectSyllable(size_t from, size_t to,
         return false;
     }
     const auto matches = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
-        input, *shuangpinProfile(), ime()->fuzzyFlags());
+        input, *shuangpinProfile(), fuzzyFlags());
     const auto valid =
         std::ranges::any_of(matches, [&syllable](const auto &initial) {
             return initial.first == syllable.initial() &&
@@ -833,8 +958,8 @@ void PinyinContext::update() {
         if (auto spProfile = d->matchState_.shuangpinProfile()) {
             if (d->selectedSyllables_.empty()) {
                 newGraph = PinyinEncoder::parseUserShuangpin(
-                    userInput().substr(start), *spProfile,
-                    d->ime_->fuzzyFlags());
+                    userInput().substr(start), *spProfile, fuzzyFlags(),
+                    d->ime_->partialSpLength());
             } else {
                 newGraph = SegmentGraph(userInput().substr(start));
                 auto appendUnconfirmed = [&](size_t from, size_t to) {
@@ -843,7 +968,7 @@ void PinyinContext::update() {
                     }
                     auto part = PinyinEncoder::parseUserShuangpin(
                         userInput().substr(from, to - from), *spProfile,
-                        d->ime_->fuzzyFlags());
+                        fuzzyFlags(), d->ime_->partialSpLength());
                     for (size_t i = 0; i < part.size(); i++) {
                         for (const auto &node : part.nodes(i)) {
                             for (const auto &next : node.nexts()) {
@@ -870,8 +995,8 @@ void PinyinContext::update() {
             }
         } else {
             newGraph = PinyinEncoder::parseUserPinyin(
-                userInput().substr(start), d->ime_->correctionProfile().get(),
-                d->ime_->fuzzyFlags());
+                userInput().substr(start),
+                d->matchState_.correctionProfile().get(), fuzzyFlags());
         }
         d->segs_.merge(
             newGraph,
@@ -961,10 +1086,20 @@ void PinyinContext::update() {
         }
         std::sort(d->candidates_.begin() + beginSize, d->candidates_.end(),
                   std::greater<>());
+        const auto preferred = d->preferredPartialShuangpin();
         {
             size_t index = 0;
             size_t count = 0;
             const auto limit = d->ime_->wordCandidateLimit();
+            // Reserve one ordinary word slot for the preferred candidate,
+            // while retaining the original n-best exemptions.
+            bool reservePreferred =
+                limit && preferred &&
+                std::none_of(
+                    d->candidates_.begin(), d->candidates_.begin() + beginSize,
+                    [&preferred](const auto &candidate) {
+                        return candidateDedupByPinyin(candidate) == *preferred;
+                    });
             std::unordered_set<CandidateDedupByPinyin,
                                CandidateDedupByPinyinHash>
                 duplicateByPinyin;
@@ -976,7 +1111,8 @@ void PinyinContext::update() {
             std::erase_if(
                 d->candidates_,
                 [&candidatesSet, &duplicateByPinyin, &duplicateByRange, &index,
-                 &count, beginSize, limit](const SentenceResult &candidate) {
+                 &count, &reservePreferred, &preferred, beginSize,
+                 limit](const SentenceResult &candidate) {
                     bool beforeBeginSize = index++ < beginSize;
                     auto byPinyin = candidateDedupByPinyin(candidate);
                     if (duplicateByPinyin.contains(byPinyin)) {
@@ -997,8 +1133,14 @@ void PinyinContext::update() {
                                     .encodedPinyin()
                                     .size() == 2;
                         if (!isSinglePinyinWord) {
-                            if (count >= limit) {
+                            const bool isPreferred =
+                                preferred && byPinyin == *preferred;
+                            if (!isPreferred &&
+                                count >= limit - size_t{reservePreferred}) {
                                 return true;
+                            }
+                            if (isPreferred) {
+                                reservePreferred = false;
                             }
                             count++;
                         }
@@ -1009,6 +1151,16 @@ void PinyinContext::update() {
                     duplicateByRange.insert(std::move(byRange));
                     return false;
                 });
+        }
+
+        if (preferred) {
+            auto it = std::ranges::find_if(
+                d->candidates_, [&preferred](const auto &candidate) {
+                    return candidateDedupByPinyin(candidate) == *preferred;
+                });
+            if (it != d->candidates_.end()) {
+                std::rotate(d->candidates_.begin(), it, std::next(it));
+            }
         }
 
         d->candidatesToCursorNeedUpdate_ = true;

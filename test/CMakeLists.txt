@@ -5,6 +5,7 @@ set(LIBIME_SINGLE_FILE_TEST
     testtable
     testpinyindata
     testpinyinencoder
+    testpinyinpartialshuangpin
     testinputbuffer
     testhistorybigram
     testshuangpinprofile

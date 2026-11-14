@@ -38,6 +38,12 @@ public:
     void setUseShuangpin(bool sp);
     bool useShuangpin() const;
 
+    /// Effective IME flags after this context's layout restriction.
+    PinyinFuzzyFlags fuzzyFlags() const;
+    /// Restrict neighbor correction without changing the shared IME setting.
+    /// Changing the restriction re-decodes the current input.
+    void setCorrectionEnabled(bool enabled);
+
     /// Override this context's profile. nullptr restores the shared IME
     /// profile. Changing the override clears only this context's composition.
     void setShuangpinProfile(std::shared_ptr<const ShuangpinProfile> profile);

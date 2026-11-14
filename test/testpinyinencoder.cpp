@@ -318,5 +318,44 @@ int main() {
         dfs(graph, {"wo", "ke", "yi", "ty", "x", "z", "bo", "li"});
     }
 
+    {
+        ShuangpinProfile sp(ShuangpinBuiltinProfile::Xiaohe);
+        auto hasPath = [](const SegmentGraph &graph,
+                          const std::vector<std::string> &expected) {
+            bool found = false;
+            graph.dfs([&found, &expected](const SegmentGraphBase &segs,
+                                          const std::vector<size_t> &path) {
+                size_t start = 0;
+                std::vector<std::string> result;
+                for (auto end : path) {
+                    result.push_back(std::string(segs.segment(start, end)));
+                    start = end;
+                }
+                found |= result == expected;
+                return true;
+            });
+            return found;
+        };
+
+        auto graph = PinyinEncoder::parseUserShuangpin(
+            "ni", sp, PinyinFuzzyFlag::PartialSp);
+        FCITX_ASSERT(hasPath(graph, {"ni"}));
+        FCITX_ASSERT(!hasPath(graph, {"n", "i"}));
+
+        graph = PinyinEncoder::parseUserShuangpin(
+            "ni", sp, PinyinFuzzyFlag::PartialSp, 2);
+        FCITX_ASSERT(hasPath(graph, {"ni"}));
+        FCITX_ASSERT(hasPath(graph, {"n", "i"}));
+
+        // The default threshold keeps a 3 key input free of single key
+        // segments.
+        graph = PinyinEncoder::parseUserShuangpin("wum", sp,
+                                                  PinyinFuzzyFlag::PartialSp);
+        FCITX_ASSERT(!hasPath(graph, {"w", "u", "m"}));
+        graph = PinyinEncoder::parseUserShuangpin(
+            "wum", sp, PinyinFuzzyFlag::PartialSp, 2);
+        FCITX_ASSERT(hasPath(graph, {"w", "u", "m"}));
+    }
+
     return 0;
 }
