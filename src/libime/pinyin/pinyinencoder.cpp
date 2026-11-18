@@ -368,7 +368,7 @@ SegmentGraph PinyinEncoder::parseUserShuangpin(std::string userPinyin,
                                                const ShuangpinProfile &sp,
                                                PinyinFuzzyFlags flags,
                                                size_t minPartialLength) {
-    minPartialLength = std::clamp(minPartialLength, size_t{2}, size_t{4});
+    minPartialLength = std::min(minPartialLength, size_t{4});
     flags = flags.unset(PinyinFuzzyFlag::AdvancedTypo);
     SegmentGraph result{std::move(userPinyin)};
     auto pinyin = result.data();
@@ -429,7 +429,7 @@ SegmentGraph PinyinEncoder::parseUserShuangpin(std::string userPinyin,
         }
     }
 
-    if (pinyin.size() >= minPartialLength &&
+    if (minPartialLength > 0 && pinyin.size() >= minPartialLength &&
         flags.test(PinyinFuzzyFlag::PartialSp)) {
         size_t i = 0;
         while (i < pinyin.size()) {

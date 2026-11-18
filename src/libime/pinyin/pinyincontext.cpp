@@ -164,6 +164,7 @@ public:
 
     bool sp_ = false;
     bool correctionEnabled_ = true;
+    bool abbreviationEnabled_ = true;
     std::shared_ptr<const ShuangpinProfile> shuangpinProfile_;
     int maxSentenceLength_ = -1;
     PinyinIME *ime_;
@@ -280,7 +281,8 @@ public:
             return std::nullopt;
         }
         const std::string &keys = segs_.data();
-        if (keys.size() < ime_->partialSpLength() ||
+        if (ime_->partialSpLength() == 0 ||
+            keys.size() < ime_->partialSpLength() ||
             keys.find('\'') != std::string::npos || hasFullShuangpinParse()) {
             return std::nullopt;
         }
@@ -685,13 +687,24 @@ bool PinyinContext::cancelSyllable() {
 
 bool PinyinContext::hasSyllableConstraints() const {
     FCITX_D();
-    return !d->selectedSyllables_.empty();
+    return !d->selectedSyllables_.empty() || !d->abbreviationEnabled_;
 }
 
 bool PinyinContext::constrainSyllables(
     size_t from, size_t to,
     MatchedPinyinSyllablesWithFuzzyFlags &syllables) const {
     FCITX_D();
+    // A single remaining key always offers candidates. Full-pinyin bare
+    // initials require the abbreviation threshold; shuangpin keeps its
+    // parser's single-key fallback for invalid pairs such as wp.
+    if (!d->abbreviationEnabled_ && !d->sp_ && size() - selectedLength() > 1) {
+        std::erase_if(syllables, [](auto &initial) {
+            std::erase_if(initial.second, [](const auto &final) {
+                return final.first == PinyinFinal::Invalid;
+            });
+            return initial.second.empty();
+        });
+    }
     for (const auto &selected : d->selectedSyllables_) {
         if (from >= selected.to || to <= selected.from) {
             continue;
@@ -954,6 +967,17 @@ void PinyinContext::update() {
         if (!d->selected_.empty()) {
             start = d->selected_.back().back().offset_;
         }
+        const auto minimum = d->ime_->partialSpLength();
+        const bool abbreviationEnabled =
+            minimum > 0 && size() - start >= minimum &&
+            (!useShuangpin() || fuzzyFlags().test(PinyinFuzzyFlag::PartialSp));
+        // Appending turns the previous unfinished final into an interior
+        // segment. Its cached wildcard matches must not survive this change
+        // or crossing the abbreviation threshold in either direction.
+        if (!abbreviationEnabled || !d->abbreviationEnabled_) {
+            d->resetMatching();
+        }
+        d->abbreviationEnabled_ = abbreviationEnabled;
         SegmentGraph newGraph;
         if (auto spProfile = d->matchState_.shuangpinProfile()) {
             if (d->selectedSyllables_.empty()) {

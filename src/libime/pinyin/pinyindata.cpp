@@ -1297,6 +1297,12 @@ std::optional<PinyinEntry> applyFuzzy(const PinyinEntry &entry,
                                       PinyinFuzzyFlag fz) {
     auto result = entry.pinyin();
     switch (fz) {
+    case PinyinFuzzyFlag::V_U: {
+        if (result == "yu" || result == "ju") {
+            result.back() = 'v';
+        }
+        break;
+    }
     case PinyinFuzzyFlag::VE_UE: {
         if (result.ends_with("ve")) {
             result[result.size() - 2] = 'u';
@@ -1479,7 +1485,7 @@ const PinyinMap &getPinyinMapV2() {
 
         applyPartialFinalFuzzy(filtered);
 
-        for (auto fz : {PinyinFuzzyFlag::U_OU, PinyinFuzzyFlag::IN_ING,
+        for (auto fz : {PinyinFuzzyFlag::V_U, PinyinFuzzyFlag::U_OU, PinyinFuzzyFlag::IN_ING,
                         PinyinFuzzyFlag::EN_ENG, PinyinFuzzyFlag::AN_ANG,
                         PinyinFuzzyFlag::UAN_UANG, PinyinFuzzyFlag::IAN_IANG,
                         PinyinFuzzyFlag::VE_UE, PinyinFuzzyFlag::F_H,

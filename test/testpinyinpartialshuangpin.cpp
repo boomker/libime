@@ -130,7 +130,9 @@ void testThresholdAndModes() {
 void testBounds() {
     auto ime = makeIME();
     ime->setPartialSpLength(0);
-    FCITX_ASSERT(ime->partialSpLength() == 2);
+    FCITX_ASSERT(ime->partialSpLength() == 0);
+    ime->setPartialSpLength(1);
+    FCITX_ASSERT(ime->partialSpLength() == 1);
     ime->setPartialSpLength(100);
     FCITX_ASSERT(ime->partialSpLength() == 4);
 }
@@ -257,8 +259,10 @@ void testAutomaticInitialFuzzy() {
     }
 
     auto ime = makeIME();
-    // Illegal pairs fall back to initials even with PartialSp disabled.
-    ime->setFuzzyFlags(PinyinFuzzyFlag::None);
+    // Initial fuzzy matching follows the abbreviation switch and threshold,
+    // including pairs that are not valid full shuangpin.
+    ime->setFuzzyFlags(PinyinFuzzyFlag::PartialSp);
+    ime->setPartialSpLength(2);
     PinyinContext c(ime.get());
     c.setUseShuangpin(true);
     ime->dict()->addWord(PinyinDictionary::SystemDict, "she'qu", "社区");
@@ -271,6 +275,7 @@ void testAutomaticInitialFuzzy() {
         FCITX_ASSERT(c.candidateSet().contains(word)) << input;
         c.clear();
     }
+    ime->setFuzzyFlags(PinyinFuzzyFlag::None);
     // Xiaohe ws is a valid pair, so wsm still needs the PartialSp graph.
     c.type("wsm");
     FCITX_ASSERT(!c.candidateSet().contains("为什么"));
@@ -279,6 +284,7 @@ void testAutomaticInitialFuzzy() {
     FCITX_ASSERT(!c.candidateSet().contains("为什么"));
 
     // Enabling shorter partial matching still promotes the best abbreviation.
+    ime->setPartialSpLength(3);
     ime->setFuzzyFlags(PinyinFuzzyFlag::PartialSp);
     c.type("wsm");
     expectFirst(c, "为什么");
@@ -299,6 +305,7 @@ void testAutomaticInitialFuzzy() {
     c.clear();
     ime->dict()->addWord(PinyinDictionary::SystemDict, "zi", "资");
     ime->dict()->addWord(PinyinDictionary::SystemDict, "zhi", "支");
+    ime->setPartialSpLength(2);
     c.type("zh");
     FCITX_ASSERT(c.candidateSet().contains("资"));
     FCITX_ASSERT(c.candidateSet().contains("支"));
@@ -365,6 +372,77 @@ void testContextCorrectionRestriction() {
     compact.type("mi");
     FCITX_ASSERT(!compact.candidateSet().contains("你"));
 }
+void testAbbreviationThresholds() {
+    for (const bool shuangpin : {false, true}) {
+        auto ime = makeIME();
+        ime->dict()->addWord(PinyinDictionary::SystemDict, "ni", "你", 0);
+        ime->dict()->addWord(PinyinDictionary::SystemDict, "hao", "好", 0);
+        ime->dict()->addWord(PinyinDictionary::SystemDict, "ni'hao'ma", "你好吗", 0);
+        ime->dict()->addWord(PinyinDictionary::SystemDict, "ni'hao'ma'ne", "你好吗呢", 0);
+        PinyinContext c(ime.get());
+        c.setUseShuangpin(shuangpin);
+        for (size_t minimum = 0; minimum <= 4; minimum++) {
+            ime->setPartialSpLength(minimum);
+            for (const auto &[keys, word] :
+                 {std::pair{"nh", "你好"}, {"nhm", "你好吗"}, {"nhmn", "你好吗呢"}}) {
+                c.clear();
+                // Exercise append and deletion across the threshold, including
+                // caches populated while the initial was still the final key.
+                for (const char key : std::string(keys)) c.type(std::string(1, key));
+                FCITX_ASSERT(c.candidateSet().contains(word) ==
+                             (minimum > 0 && std::string(keys).size() >= minimum))
+                    << shuangpin << " " << minimum << " " << keys;
+            }
+            c.erase(2, c.size());
+            FCITX_ASSERT(c.candidateSet().contains("你好") ==
+                         (minimum > 0 && minimum <= 2));
+            c.clear();
+            c.type(shuangpin ? "nihc" : "nihao");
+            FCITX_ASSERT(c.candidateSet().contains("你好"));
+            c.clear();
+            c.type("n");
+            FCITX_ASSERT(c.candidateSet().contains("你"));
+            c.clear();
+            c.type("nih");
+            FCITX_ASSERT(c.candidateSet().contains("你好") ==
+                         (minimum > 0 && minimum <= 3));
+        }
+        ime->setPartialSpLength(0);
+        c.type("n'h");
+        FCITX_ASSERT(!c.candidateSet().contains("你好"));
+        c.clear();
+        c.type(shuangpin ? "nihcnh" : "nihaonh");
+        const auto first = std::ranges::find(c.candidates(), "你好", &SentenceResult::toString);
+        FCITX_ASSERT(first != c.candidates().end());
+        c.select(std::distance(c.candidates().begin(), first));
+        FCITX_ASSERT(!c.candidateSet().contains("你好"));
+        c.clear();
+        c.type(shuangpin ? "nihcn" : "nihaon");
+        const auto prefix = std::ranges::find(c.candidates(), "你好", &SentenceResult::toString);
+        FCITX_ASSERT(prefix != c.candidates().end());
+        c.select(std::distance(c.candidates().begin(), prefix));
+        FCITX_ASSERT(c.candidateSet().contains("你"));
+    }
+}
+
+void testUvMappingWithoutTypos() {
+    auto ime = makeIME();
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "yu", "鱼", 0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "ju", "句", 0);
+    for (const bool shuangpin : {false, true}) {
+        PinyinContext c(ime.get());
+        c.setUseShuangpin(shuangpin);
+        for (const auto &[keys, word] : {std::pair{"yv", "鱼"}, {"jv", "句"}}) {
+            ime->setFuzzyFlags(PinyinFuzzyFlag::None);
+            c.type(keys);
+            FCITX_ASSERT(!c.candidateSet().contains(word));
+            ime->setFuzzyFlags(PinyinFuzzyFlag::V_U);
+            c.type(keys);
+            FCITX_ASSERT(c.candidateSet().contains(word)) << keys << " " << shuangpin;
+            c.clear();
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -374,4 +452,6 @@ int main() {
     testCandidateLimitAndExplicitBoundaries();
     testAutomaticInitialFuzzy();
     testContextCorrectionRestriction();
+    testAbbreviationThresholds();
+    testUvMappingWithoutTypos();
 }
