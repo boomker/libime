@@ -133,7 +133,9 @@ void testBounds() {
     ime->setPartialSpLength(0);
     FCITX_ASSERT(ime->partialSpLength() == 0);
     ime->setPartialSpLength(1);
-    FCITX_ASSERT(ime->partialSpLength() == 1);
+    FCITX_ASSERT(ime->partialSpLength() == 2);
+    ime->setPartialSpLength(2);
+    FCITX_ASSERT(ime->partialSpLength() == 2);
     ime->setPartialSpLength(100);
     FCITX_ASSERT(ime->partialSpLength() == 4);
 }
@@ -465,10 +467,21 @@ void testAbbreviationThresholds() {
             c.clear();
             c.type("n");
             FCITX_ASSERT(c.candidateSet().contains("你"));
+            FCITX_ASSERT(!c.candidateSet().contains("你好"));
             c.clear();
             c.type("nih");
-            FCITX_ASSERT(c.candidateSet().contains("你好") ==
-                         (minimum > 0 && minimum <= 3));
+            // An unfinished final syllable is completion in both modes,
+            // independently of the abbreviation switch and threshold.
+            FCITX_ASSERT(c.candidateSet().contains("你好"))
+                << shuangpin << " " << minimum;
+            // Appending makes h an interior initial; deleting restores the
+            // unfinished final without retaining its interior matches.
+            c.type("n");
+            FCITX_ASSERT(c.candidateSet().contains("你好") == (minimum > 0))
+                << shuangpin << " " << minimum;
+            c.backspace();
+            FCITX_ASSERT(c.candidateSet().contains("你好"))
+                << shuangpin << " " << minimum;
         }
         ime->setPartialSpLength(0);
         c.type("n'h");
@@ -485,6 +498,48 @@ void testAbbreviationThresholds() {
         FCITX_ASSERT(prefix != c.candidates().end());
         c.select(std::distance(c.candidates().begin(), prefix));
         FCITX_ASSERT(c.candidateSet().contains("你"));
+    }
+}
+
+void testCompletionBoundaries() {
+    auto ime = makeIME();
+    ime->setPartialSpLength(0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "ni", "你", 0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "hao", "好", 0);
+    ime->setFuzzyFlags(PinyinFuzzyFlag::None);
+    for (const bool shuangpin : {false, true}) {
+        PinyinContext c(ime.get());
+        c.setUseShuangpin(shuangpin);
+
+        // Completion remains available with all fuzzy matching disabled.
+        c.type("nih");
+        FCITX_ASSERT(c.candidateSet().contains("你好"));
+        c.clear();
+        c.type("n'h");
+        FCITX_ASSERT(!c.candidateSet().contains("你好"));
+
+        // Match offsets remain absolute after a prefix has been selected.
+        c.clear();
+        c.type(shuangpin ? "nihcnihn" : "nihaonihn");
+        const auto prefix = std::ranges::find(c.candidates(), "你好",
+                                              &SentenceResult::toString);
+        FCITX_ASSERT(prefix != c.candidates().end());
+        c.select(std::distance(c.candidates().begin(), prefix));
+        FCITX_ASSERT(c.selectedLength() == (shuangpin ? 4 : 5));
+        FCITX_ASSERT(!c.candidateSet().contains("你好"));
+        c.backspace();
+        FCITX_ASSERT(c.candidateSet().contains("你好"));
+
+        if (shuangpin) {
+            // A confirmed initial has a deliberate syllable boundary.
+            c.clear();
+            c.type("n");
+            FCITX_ASSERT(c.candidateSet().contains("你"));
+            FCITX_ASSERT(c.selectSyllable(
+                0, 1, PinyinSyllable(PinyinInitial::N, PinyinFinal::Invalid)));
+            c.type("hc");
+            FCITX_ASSERT(c.candidateSet().contains("你好"));
+        }
     }
 }
 
@@ -517,5 +572,6 @@ int main() {
     testGroupedInitialMatching();
     testContextCorrectionRestriction();
     testAbbreviationThresholds();
+    testCompletionBoundaries();
     testUvMappingWithoutTypos();
 }

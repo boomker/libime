@@ -694,10 +694,16 @@ bool PinyinContext::constrainSyllables(
     size_t from, size_t to,
     MatchedPinyinSyllablesWithFuzzyFlags &syllables) const {
     FCITX_D();
-    // A single remaining key always offers candidates. Full-pinyin bare
-    // initials require the abbreviation threshold; shuangpin keeps its
-    // parser's single-key fallback for invalid pairs such as wp.
-    if (!d->abbreviationEnabled_ && !d->sp_ && size() - selectedLength() > 1) {
+    // A single remaining key always offers candidates, as do an unfinished
+    // final syllable and explicitly confirmed boundaries.
+    // Other bare initials require the abbreviation threshold.
+    const bool allowIncompleteSyllable =
+        to == size() ||
+        std::ranges::any_of(d->selectedSyllables_, [from, to](const auto &s) {
+            return s.from == from && s.to == to;
+        });
+    if (!d->abbreviationEnabled_ && !allowIncompleteSyllable &&
+        size() - selectedLength() > 1) {
         std::erase_if(syllables, [](auto &initial) {
             std::erase_if(initial.second, [](const auto &final) {
                 return final.first == PinyinFinal::Invalid;

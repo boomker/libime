@@ -163,7 +163,8 @@ size_t PinyinIME::partialSpLength() const {
 
 void PinyinIME::setPartialSpLength(size_t n) {
     FCITX_D();
-    n = std::min(n, size_t{4});
+    // A single key is completion, never an abbreviation. Keep 0 as disabled.
+    n = n == 0 ? 0 : std::clamp(n, size_t{2}, size_t{4});
     if (d->partialSpLength_ != n) {
         d->partialSpLength_ = n;
         emit<PinyinIME::optionChanged>();
