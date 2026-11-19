@@ -44,6 +44,7 @@ public:
     ShuangpinProfile::ValidInputSetType validInitials_;
     ShuangpinProfile::TableType spTable_;
     std::string name_;
+    bool grouped_ = false;
 
     void buildShuangpinTable(const PinyinCorrectionProfile *correctionProfile) {
         // Set up valid inputs.
@@ -500,6 +501,7 @@ ShuangpinProfile::ShuangpinProfile(
     : d_ptr(std::make_unique<ShuangpinProfilePrivate>()) {
     FCITX_D();
     d->name_ = source.name();
+    d->grouped_ = true;
     for (const auto &[input, syllables] : source.table()) {
         std::string mapped;
         for (char key : input) {
@@ -556,6 +558,11 @@ void ShuangpinProfile::buildShuangpinTable() {}
 const ShuangpinProfile::TableType &ShuangpinProfile::table() const {
     FCITX_D();
     return d->spTable_;
+}
+
+bool ShuangpinProfile::isGrouped() const {
+    FCITX_D();
+    return d->grouped_;
 }
 
 const ShuangpinProfile::ValidInputSetType &

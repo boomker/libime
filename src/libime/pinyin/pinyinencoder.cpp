@@ -636,7 +636,8 @@ namespace {
 
 template <typename FuzzyValue, typename Adjuster>
 void getFuzzy(FuzzyPinyinSyllables<FuzzyValue> &syls, PinyinSyllable syl,
-              PinyinFuzzyFlags flags, const Adjuster &adjuster) {
+              PinyinFuzzyFlags flags, const Adjuster &adjuster,
+              bool automaticInitialFuzzy = true) {
     // ng/gn is already handled by table
     boost::container::static_vector<std::tuple<PinyinInitial, PinyinFuzzyFlags>,
                                     2>
@@ -645,9 +646,9 @@ void getFuzzy(FuzzyPinyinSyllables<FuzzyValue> &syls, PinyinSyllable syl,
                                     10>
         finals{{syl.final(), PinyinFuzzyFlag::None}};
 
-    // Bare initials automatically match their retroflex/non-retroflex partner
-    // in both pinyin and shuangpin. Complete syllables still use the options.
-    if (syl.final() == PinyinFinal::Invalid) {
+    // Ordinary bare initials automatically match their retroflex partner.
+    // Grouped shuangpin uses only its mapped initials and explicit options.
+    if (automaticInitialFuzzy && syl.final() == PinyinFinal::Invalid) {
         if (syl.initial() == PinyinInitial::C ||
             syl.initial() == PinyinInitial::CH) {
             flags |= PinyinFuzzyFlag::C_CH;
@@ -882,7 +883,8 @@ shuangpinToSyllablesImpl(std::string_view pinyinView,
                 getFuzzy(result, {p.first.initial(), p.first.final()}, flags,
                          [base = p.second, &adjuster](PinyinFuzzyFlags flags) {
                              return adjuster(flags | base);
-                         });
+                         },
+                         !sp.isGrouped());
             }
         }
     }

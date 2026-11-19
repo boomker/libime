@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <fcitx-utils/log.h>
 #include "libime/core/historybigram.h"
 #include "libime/core/lattice.h"
@@ -314,6 +315,68 @@ void testAutomaticInitialFuzzy() {
     FCITX_ASSERT(c.candidateSet().contains("支"));
     FCITX_ASSERT(!c.candidateSet().contains("资"));
 }
+void testGroupedInitialMatching() {
+    const ShuangpinProfile profile(ShuangpinBuiltinProfile::Xiaohe);
+    FCITX_ASSERT(!profile.isGrouped());
+    std::unordered_map<char, char> mapping;
+    for (const std::string group :
+         {"q", "we", "rt", "y", "u", "io", "p", "a", "sd", "fg", "h", "jk",
+          "l;", "z", "xc", "v", "bn", "m"}) {
+        for (char key : group) {
+            mapping.emplace(key, group.front());
+        }
+    }
+    const ShuangpinProfile grouped(profile, mapping);
+    FCITX_ASSERT(grouped.isGrouped());
+    FCITX_ASSERT(ShuangpinProfile(grouped).isGrouped());
+    for (const auto &[key, exact, alternate, fuzzy] :
+         {std::tuple{'z', PinyinInitial::Z, PinyinInitial::ZH,
+                     PinyinFuzzyFlag::Z_ZH},
+          std::tuple{'v', PinyinInitial::ZH, PinyinInitial::Z,
+                     PinyinFuzzyFlag::Z_ZH},
+          std::tuple{'c', PinyinInitial::C, PinyinInitial::CH,
+                     PinyinFuzzyFlag::C_CH},
+          std::tuple{'i', PinyinInitial::CH, PinyinInitial::C,
+                     PinyinFuzzyFlag::C_CH},
+          std::tuple{'s', PinyinInitial::S, PinyinInitial::SH,
+                     PinyinFuzzyFlag::S_SH},
+          std::tuple{'u', PinyinInitial::SH, PinyinInitial::S,
+                     PinyinFuzzyFlag::S_SH}}) {
+        const auto hasInitial = [](const auto &syllables,
+                                   PinyinInitial initial) {
+            return std::ranges::any_of(syllables, [&](const auto &entry) {
+                return entry.first == initial &&
+                       std::ranges::any_of(entry.second, [](const auto &value) {
+                           return value.first == PinyinFinal::Invalid;
+                       });
+            });
+        };
+        const std::string input(1, mapping.at(key));
+        const auto matches = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+            input, grouped, PinyinFuzzyFlag::None);
+        FCITX_ASSERT(hasInitial(matches, exact)) << key;
+        FCITX_ASSERT(!hasInitial(matches, alternate)) << key;
+        const auto explicitlyEnabled =
+            PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(input, grouped,
+                                                              fuzzy);
+        FCITX_ASSERT(hasInitial(explicitlyEnabled, alternate)) << key;
+    }
+
+    auto ime = makeIME();
+    ime->setShuangpinProfile(std::make_shared<ShuangpinProfile>(grouped));
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "nan'shi'zi'chuan'dui",
+                         "南十字船队", 0);
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    // The physical keys bn/u/v/io/sd encode b/u/v/i/s. The third key is
+    // zh, not z, even when all five keys are interpreted as initials.
+    c.type("buvis");
+    FCITX_ASSERT(!c.candidateSet().contains("南十字船队"));
+    c.clear();
+    c.type("buzis");
+    FCITX_ASSERT(c.candidateSet().contains("南十字船队"));
+}
+
 void testContextCorrectionRestriction() {
     auto ime = makeIME();
     const auto correction = std::make_shared<PinyinCorrectionProfile>(
@@ -451,6 +514,7 @@ int main() {
     testBounds();
     testCandidateLimitAndExplicitBoundaries();
     testAutomaticInitialFuzzy();
+    testGroupedInitialMatching();
     testContextCorrectionRestriction();
     testAbbreviationThresholds();
     testUvMappingWithoutTypos();

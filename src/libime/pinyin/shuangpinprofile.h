@@ -61,6 +61,8 @@ public:
     const ValidInputSetType &validInput() const;
     const ValidInputSetType &validInitial() const;
     const std::string &name() const;
+    /// Whether this profile was projected onto grouped keyboard keys.
+    bool isGrouped() const;
 
 private:
     void buildShuangpinTable();
