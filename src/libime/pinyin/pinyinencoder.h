@@ -68,6 +68,11 @@ enum class PinyinFuzzyFlag {
      * Enable matching for lower case single pinyin as English letter.
      */
     Letter = 1 << 21,
+    /**
+     * Disable automatic retroflex matching for bare shuangpin initials.
+     * Explicit fuzzy options and grouped key mappings still apply.
+     */
+    DisableShuangpinInitialFuzzy = 1 << 22,
 };
 
 using PinyinFuzzyFlags = fcitx::Flags<PinyinFuzzyFlag>;

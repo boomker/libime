@@ -206,6 +206,19 @@ void testAutomaticInitialFuzzy() {
                                  PinyinFuzzyFlag::None));
         FCITX_ASSERT(
             hasSyllable(partial, alternate, PinyinFinal::Invalid, fuzzy));
+        const PinyinFuzzyFlags disabled =
+            PinyinFuzzyFlag::DisableShuangpinInitialFuzzy;
+        const auto exact = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+            std::string(1, key), profile, disabled);
+        FCITX_ASSERT(hasSyllable(exact, initial, PinyinFinal::Invalid,
+                                 PinyinFuzzyFlag::None));
+        FCITX_ASSERT(
+            !hasSyllable(exact, alternate, PinyinFinal::Invalid, fuzzy));
+        const auto explicitFuzzy =
+            PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+                std::string(1, key), profile, disabled | fuzzy);
+        FCITX_ASSERT(hasSyllable(explicitFuzzy, alternate,
+                                 PinyinFinal::Invalid, fuzzy));
 
         // Valid two-key syllables still require the explicit fuzzy option.
         const auto full = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
@@ -216,6 +229,13 @@ void testAutomaticInitialFuzzy() {
         const auto enabled = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
             std::string(1, key) + "a", profile, fuzzy);
         FCITX_ASSERT(hasSyllable(enabled, alternate, PinyinFinal::A, fuzzy));
+        FCITX_ASSERT(
+            PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+                std::string(1, key) + "a", profile, disabled) == full);
+        FCITX_ASSERT(
+            PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+                std::string(1, key) + "a", profile, disabled | fuzzy) ==
+            enabled);
 
         const auto fullPinyinInitial =
             PinyinEncoder::stringToSyllablesWithFuzzyFlags(
@@ -225,6 +245,9 @@ void testAutomaticInitialFuzzy() {
                                  PinyinFinal::Invalid, PinyinFuzzyFlag::None));
         FCITX_ASSERT(hasSyllable(fullPinyinInitial, alternate,
                                  PinyinFinal::Invalid, fuzzy));
+        FCITX_ASSERT(PinyinEncoder::stringToSyllablesWithFuzzyFlags(
+                         PinyinEncoder::initialToString(initial), nullptr,
+                         disabled) == fullPinyinInitial);
         const auto fullPinyinSyllable =
             PinyinEncoder::stringToSyllablesWithFuzzyFlags(
                 PinyinEncoder::initialToString(initial) + "a", nullptr,
@@ -233,6 +256,9 @@ void testAutomaticInitialFuzzy() {
                                  PinyinFuzzyFlag::None));
         FCITX_ASSERT(
             !hasSyllable(fullPinyinSyllable, alternate, PinyinFinal::A, fuzzy));
+        FCITX_ASSERT(PinyinEncoder::stringToSyllablesWithFuzzyFlags(
+                         PinyinEncoder::initialToString(initial) + "a",
+                         nullptr, disabled) == fullPinyinSyllable);
     }
 
     // Exact aliases on a merged keyboard must retain their exact flags, even
@@ -250,6 +276,10 @@ void testAutomaticInitialFuzzy() {
         const auto syllables =
             PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
                 std::string(1, key), merged, PinyinFuzzyFlag::None);
+        FCITX_ASSERT(
+            PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+                std::string(1, key), merged,
+                PinyinFuzzyFlag::DisableShuangpinInitialFuzzy) == syllables);
         for (const auto initial : {first, second}) {
             const auto it = std::ranges::find(
                 syllables, initial, &decltype(syllables)::value_type::first);
@@ -278,6 +308,36 @@ void testAutomaticInitialFuzzy() {
         FCITX_ASSERT(c.candidateSet().contains(word)) << input;
         c.clear();
     }
+    // Changing the option clears existing matches before decoding the same
+    // input again, including dictionary match caches.
+    c.type("sq");
+    FCITX_ASSERT(c.candidateSet().contains("社区"));
+    ime->setFuzzyFlags({PinyinFuzzyFlag::PartialSp,
+                        PinyinFuzzyFlag::DisableShuangpinInitialFuzzy});
+    FCITX_ASSERT(c.empty());
+    for (const auto &[input, word] :
+         {std::pair{"sq", "社区"}, std::pair{"zq", "正确"},
+          std::pair{"cq", "出去"}}) {
+        c.type(input);
+        FCITX_ASSERT(!c.candidateSet().contains(word)) << input;
+        c.clear();
+    }
+    for (const auto &[input, word] :
+         {std::pair{"uq", "社区"}, std::pair{"vq", "正确"},
+          std::pair{"iq", "出去"}}) {
+        c.type(input);
+        FCITX_ASSERT(c.candidateSet().contains(word)) << input;
+        c.clear();
+    }
+    ime->setFuzzyFlags({PinyinFuzzyFlag::PartialSp,
+                        PinyinFuzzyFlag::DisableShuangpinInitialFuzzy,
+                        PinyinFuzzyFlag::S_SH});
+    c.type("sq");
+    FCITX_ASSERT(c.candidateSet().contains("社区"));
+    ime->setFuzzyFlags(PinyinFuzzyFlag::PartialSp);
+    FCITX_ASSERT(c.empty());
+    c.type("sq");
+    FCITX_ASSERT(c.candidateSet().contains("社区"));
     ime->setFuzzyFlags(PinyinFuzzyFlag::None);
     // Xiaohe ws is a valid pair, so wsm still needs the PartialSp graph.
     c.type("wsm");

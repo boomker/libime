@@ -886,7 +886,9 @@ shuangpinToSyllablesImpl(std::string_view pinyinView,
                          [base = p.second, &adjuster](PinyinFuzzyFlags flags) {
                              return adjuster(flags | base);
                          },
-                         !sp.isGrouped());
+                         !sp.isGrouped() &&
+                             !flags.test(
+                                 PinyinFuzzyFlag::DisableShuangpinInitialFuzzy));
             }
         }
     }
