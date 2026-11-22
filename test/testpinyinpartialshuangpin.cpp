@@ -603,6 +603,183 @@ void testCompletionBoundaries() {
     }
 }
 
+std::unique_ptr<PinyinIME> makeRecoveryIME() {
+    auto ime = makeIME();
+    auto correction = std::make_shared<PinyinCorrectionProfile>(
+        BuiltinPinyinCorrectionProfile::Qwerty);
+    ime->setCorrectionProfile(correction);
+    ime->setShuangpinProfile(std::make_shared<ShuangpinProfile>(
+        ShuangpinBuiltinProfile::Xiaohe, correction.get()));
+    ime->setFuzzyFlags({PinyinFuzzyFlag::Correction, PinyinFuzzyFlag::PartialSp});
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fei'yi", "非遗", 0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fei'yi", "非议", -1);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fei'yi", "飞蚁", -2);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fei'yi", "非夷", -3);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fei'fei", "菲菲", 0);
+    return ime;
+}
+
+void testShuangpinRecovery() {
+    auto ime = makeRecoveryIME();
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    c.type("fqyi");
+    const auto originalCandidates = c.candidates();
+    const auto offset = c.nextSyllableOffset();
+    const auto cursor = c.cursor();
+    const auto recovery = c.shuangpinRecoveryCandidates();
+    FCITX_ASSERT(!recovery.empty());
+    FCITX_ASSERT(recovery.front().word == "非遗") << recovery.front().word;
+    FCITX_ASSERT(recovery.front().inputLength == 4);
+    FCITX_ASSERT(PinyinEncoder::decodeFullPinyin(recovery.front().encodedPinyin) ==
+                 "fei'yi");
+    FCITX_ASSERT(recovery.size() <= 3);
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates(1).size() == 1);
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates(0).empty());
+    FCITX_ASSERT(c.userInput() == "fqyi" && c.cursor() == cursor &&
+                 c.nextSyllableOffset() == offset && !c.selected());
+    FCITX_ASSERT(!c.cancelSyllable());
+    FCITX_ASSERT(c.candidates().size() == originalCandidates.size());
+    for (size_t i = 0; i < originalCandidates.size(); ++i) {
+        FCITX_ASSERT(c.candidates()[i].toString() == originalCandidates[i].toString());
+    }
+    FCITX_ASSERT(ime->model()->history().rawUnigramFrequency({"非遗", recovery.front().encodedPinyin}) == 0);
+    c.selectCustom(recovery.front().inputLength, recovery.front().word,
+                   recovery.front().encodedPinyin);
+    FCITX_ASSERT(c.selected() && c.selectedLength() == 4 && c.sentence() == "非遗");
+    FCITX_ASSERT(c.selectedFullPinyin() == "fei'yi");
+    c.learn();
+    FCITX_ASSERT(ime->model()->history().rawUnigramFrequency({"非遗", recovery.front().encodedPinyin}) > 0);
+
+    c.clear();
+    c.type("fqfq");
+    const auto twice = c.shuangpinRecoveryCandidates();
+    FCITX_ASSERT(!twice.empty() && twice.front().word == "菲菲");
+    FCITX_ASSERT(twice.front().inputLength == 4);
+    c.type("fq");
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
+
+    // Explicit separators preserve the original consumption range.
+    c.clear();
+    c.type("fq'yi");
+    const auto separated = c.shuangpinRecoveryCandidates();
+    FCITX_ASSERT(!separated.empty() && separated.front().inputLength == 5);
+    FCITX_ASSERT(separated.front().word == "非遗");
+
+    // Selected Chinese prefixes become language context, not consumed keys.
+    c.clear();
+    c.type("nifqyi");
+    const auto ni = PinyinEncoder::encodeFullPinyin("ni");
+    c.selectCustom(2, "你", std::string_view(ni.data(), ni.size()));
+    const auto suffix = c.shuangpinRecoveryCandidates();
+    FCITX_ASSERT(!suffix.empty() && suffix.front().word == "非遗" &&
+                 suffix.front().inputLength == 4);
+    c.selectCustom(4, suffix.front().word, suffix.front().encodedPinyin);
+    FCITX_ASSERT(c.selected() && c.sentence() == "你非遗");
+}
+
+// Deliberately make the pre-EOS and completed-sentence rankings disagree.
+class RecoveryEndModel : public UserLanguageModel {
+public:
+    WordIndex endSentence() const override { return 999; }
+    WordIndex index(std::string_view word) const override {
+        return word == "非遗" ? 1 : word == "非议" ? 2 : 3;
+    }
+    bool isUnknown(WordIndex, std::string_view) const override { return false; }
+    float score(const State &state, const WordNode &word, State &out) const override {
+        out = state;
+        if (word.idx() == endSentence()) {
+            return state[0] == 1 ? -10.0F : 0.0F;
+        }
+        out[0] = static_cast<char>(word.idx());
+        return word.word() == "非遗" ? 0.0F : -1.0F;
+    }
+};
+
+void testRecoveryUsesCompleteSentenceScores() {
+    auto ime = std::make_unique<PinyinIME>(
+        std::make_unique<PinyinDictionary>(), std::make_unique<RecoveryEndModel>());
+    PinyinCorrectionProfile correction(BuiltinPinyinCorrectionProfile::Qwerty);
+    ime->setShuangpinProfile(std::make_shared<ShuangpinProfile>(
+        ShuangpinBuiltinProfile::Xiaohe, &correction));
+    ime->setFuzzyFlags(PinyinFuzzyFlag::Correction);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fei'yi", "非遗", 0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fei'yi", "非议", 0);
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    c.type("fqyi");
+    const auto results = c.shuangpinRecoveryCandidates();
+    FCITX_ASSERT(!results.empty() && results.front().word == "非议");
+}
+
+void testRecoverySchemesAndReadings() {
+    auto ime = makeRecoveryIME();
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    PinyinCorrectionProfile correction(BuiltinPinyinCorrectionProfile::Qwerty);
+    std::stringstream definition;
+    definition << "方案名称=Recovery test\n=*\nfei=fw\nfa=fw\nyi=yi\n";
+    auto custom = std::make_shared<ShuangpinProfile>(definition, &correction);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "fa'yi", "非遗", -0.1F);
+    c.setShuangpinProfile(custom);
+    c.type("fqyi");
+    const auto results = c.shuangpinRecoveryCandidates();
+    FCITX_ASSERT(std::ranges::count(results, std::string("非遗"),
+                                    &ShuangpinRecoveryCandidate::word) == 2);
+    FCITX_ASSERT(results[0].encodedPinyin != results[1].encodedPinyin);
+    c.setShuangpinProfile(std::make_shared<ShuangpinProfile>(
+        *custom, std::unordered_map<char, char>{{'f', 'f'}, {'w', 'w'},
+                                                {'q', 'q'}, {'y', 'y'}, {'i', 'i'}}));
+    c.type("fqyi");
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
+    c.setShuangpinProfile(std::make_shared<ShuangpinProfile>(
+        ShuangpinBuiltinProfile::Ziranma, &correction));
+    c.type("fxyi"); // Natural Code uses fz for fei; x is adjacent to z.
+    FCITX_ASSERT(!c.shuangpinRecoveryCandidates().empty());
+    std::stringstream changedDefinition;
+    changedDefinition << "方案名称=Changed recovery\n=*\nfei=fe\nyi=yi\n";
+    c.setShuangpinProfile(std::make_shared<ShuangpinProfile>(
+        changedDefinition, &correction));
+    c.type("fqyi");
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
+}
+
+void testShuangpinRecoveryEditsAndOptions() {
+    auto ime = makeRecoveryIME();
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    c.type("fqyi");
+    const PinyinSyllable fei(PinyinInitial::F, PinyinFinal::EI);
+    FCITX_ASSERT(c.selectSyllable(0, 2, fei));
+    FCITX_ASSERT(!c.shuangpinRecoveryCandidates().empty());
+    FCITX_ASSERT(c.nextSyllableOffset() == 2 && c.cancelSyllable());
+    FCITX_ASSERT(c.nextSyllableOffset() == 0);
+    c.setCursor(2);
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
+    c.setCursor(4);
+    FCITX_ASSERT(!c.shuangpinRecoveryCandidates().empty());
+    c.erase(3, 4);
+    FCITX_ASSERT(c.userInput() == "fqy" && c.shuangpinRecoveryCandidates().empty());
+    c.type("i");
+    FCITX_ASSERT(!c.shuangpinRecoveryCandidates().empty());
+    c.setCorrectionEnabled(false);
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
+    c.setCorrectionEnabled(true);
+    FCITX_ASSERT(!c.shuangpinRecoveryCandidates().empty());
+    ime->setFuzzyFlags(PinyinFuzzyFlag::PartialSp);
+    c.type("fqyi");
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
+    ime->setFuzzyFlags(PinyinFuzzyFlag::Correction);
+    for (const auto *keys : {"fwyi", "fqy", "fq", "f'qyi", "Fqyi"}) {
+        c.clear();
+        c.type(keys);
+        FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty()) << keys;
+    }
+    c.setUseShuangpin(false);
+    c.type("fqyi");
+    FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
+}
+
 void testUvMappingWithoutTypos() {
     auto ime = makeIME();
     ime->dict()->addWord(PinyinDictionary::SystemDict, "yu", "鱼", 0);
@@ -634,4 +811,8 @@ int main() {
     testAbbreviationThresholds();
     testCompletionBoundaries();
     testUvMappingWithoutTypos();
+    testShuangpinRecovery();
+    testShuangpinRecoveryEditsAndOptions();
+    testRecoveryUsesCompleteSentenceScores();
+    testRecoverySchemesAndReadings();
 }

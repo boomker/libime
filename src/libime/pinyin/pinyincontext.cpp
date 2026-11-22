@@ -42,6 +42,7 @@
 #include "pinyinencoder.h"
 #include "pinyinime.h"
 #include "pinyinmatchstate.h"
+#include "shuangpinprofile.h"
 
 namespace libime {
 
@@ -161,6 +162,15 @@ public:
 
     std::vector<std::vector<SelectedPinyin>> selected_;
     std::vector<SelectedSyllable> selectedSyllables_;
+
+    // Only populated in an isolated recovery decoder. Readings are already
+    // constrained by the original context, including explicit confirmations.
+    struct RecoverySyllables {
+        size_t from;
+        size_t to;
+        MatchedPinyinSyllablesWithFuzzyFlags matches;
+    };
+    std::vector<RecoverySyllables> recoverySyllables_;
 
     bool sp_ = false;
     bool correctionEnabled_ = true;
@@ -685,15 +695,150 @@ bool PinyinContext::cancelSyllable() {
     return true;
 }
 
+std::vector<ShuangpinRecoveryCandidate>
+PinyinContext::shuangpinRecoveryCandidates(size_t limit) const {
+    FCITX_D();
+    const auto profile = shuangpinProfile();
+    const auto flags = fuzzyFlags();
+    if (!limit || !useShuangpin() || !profile || profile->isGrouped() ||
+        cursor() != size() || !flags.test(PinyinFuzzyFlag::Correction)) {
+        return {};
+    }
+    const auto start = selectedLength();
+    const auto keys = std::string_view(userInput()).substr(start);
+    if (keys.size() < 4 || std::ranges::any_of(keys, [](char c) {
+            return !fcitx::charutils::islower(c) && c != ';' && c != '\'';
+        })) {
+        return {};
+    }
+
+    PinyinContext recovery(d->ime_);
+    auto *temporary = recovery.d_func();
+    temporary->sp_ = true;
+    temporary->shuangpinProfile_ = profile;
+    // Bypass PinyinContext::typeImpl: this buffer is only the helper for the
+    // local lattice below and must not start an ordinary, unconstrained decode.
+    recovery.InputBuffer::typeImpl(keys.data(), keys.size());
+    SegmentGraph graph{std::string(keys)};
+    size_t invalidPairs = 0;
+    size_t syllables = 0;
+    for (size_t from = 0; from < keys.size();) {
+        if (keys[from] == '\'') {
+            auto to = from + 1;
+            while (to < keys.size() && keys[to] == '\'') {
+                ++to;
+            }
+            graph.addNext(from, to);
+            from = to;
+            continue;
+        }
+        if (from + 1 >= keys.size() || keys[from + 1] == '\'' ||
+            ++syllables > 35) {
+            return {};
+        }
+        const auto to = from + 2;
+        const auto pair = keys.substr(from, 2);
+        auto matches = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+            pair, *profile, flags.unset(PinyinFuzzyFlag::Correction));
+        const auto retainComplete = [](auto &matches) {
+            std::erase_if(matches, [](auto &initial) {
+                std::erase_if(initial.second, [](const auto &final) {
+                    return final.first == PinyinFinal::Invalid;
+                });
+                return initial.first == PinyinInitial::Invalid ||
+                       initial.second.empty();
+            });
+        };
+        retainComplete(matches);
+        if (matches.empty()) {
+            if (++invalidPairs > 2) {
+                return {};
+            }
+            matches = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+                pair, *profile, flags);
+            retainComplete(matches);
+        }
+        if (matches.empty() ||
+            !constrainSyllables(start + from, start + to, matches) ||
+            matches.empty()) {
+            return {};
+        }
+        temporary->recoverySyllables_.push_back(
+            {from, to, std::move(matches)});
+        graph.addNext(from, to);
+        from = to;
+    }
+    if (!invalidPairs) {
+        return {};
+    }
+
+    // No recovery cache is shared across input, cursor, scheme, confirmation,
+    // or language-model states. Position-dependent dictionary caches are
+    // disabled by hasSyllableConstraints(), just like manual confirmations.
+    Lattice lattice;
+    const auto count = std::min<size_t>(limit, 3);
+    d->ime_->decoder()->decode(lattice, graph, count, state(),
+                               d->ime_->maxDistance(), d->ime_->minPath(),
+                               8, 32, &temporary->matchState_);
+    std::vector<SentenceResult> pool;
+    for (size_t i = 0; i < lattice.sentenceSize(); ++i) {
+        pool.push_back(lattice.sentence(i));
+    }
+    // The decoder's N-best deduplicates text. Also inspect complete lattice
+    // paths so different readings of the same text retain their own identity.
+    const auto endNodes = lattice.nodes(nullptr);
+    if (endNodes.empty()) {
+        return {};
+    }
+    const auto &eos = endNodes.front();
+    for (const auto &node : lattice.nodes(&graph.end())) {
+        State afterEOS;
+        const auto endScore = d->ime_->model()->score(node.state(), eos, afterEOS);
+        pool.push_back(node.toSentenceResult(endScore));
+    }
+    std::stable_sort(pool.begin(), pool.end(), std::greater<>());
+    std::vector<ShuangpinRecoveryCandidate> results;
+    for (const auto &candidate : pool) {
+        if (candidateSelectTo(candidate) != keys.size()) {
+            continue;
+        }
+        auto encoded = sentenceEncodedFullPinyin(candidate);
+        auto word = candidate.toString();
+        if (word.empty() || encoded.size() != syllables * 2 ||
+            std::ranges::any_of(results, [&](const auto &old) {
+                return old.word == word && old.encodedPinyin == encoded;
+            })) {
+            continue;
+        }
+        results.push_back({std::move(word), std::move(encoded), keys.size()});
+        if (results.size() == count) {
+            break;
+        }
+    }
+    return results;
+}
+
 bool PinyinContext::hasSyllableConstraints() const {
     FCITX_D();
-    return !d->selectedSyllables_.empty() || !d->abbreviationEnabled_;
+    return !d->selectedSyllables_.empty() || !d->recoverySyllables_.empty() ||
+           !d->abbreviationEnabled_;
 }
 
 bool PinyinContext::constrainSyllables(
     size_t from, size_t to,
     MatchedPinyinSyllablesWithFuzzyFlags &syllables) const {
     FCITX_D();
+    if (!d->recoverySyllables_.empty()) {
+        const auto match = std::ranges::find_if(
+            d->recoverySyllables_, [from, to](const auto &entry) {
+                return entry.from == from && entry.to == to;
+            });
+        if (match == d->recoverySyllables_.end()) {
+            return false;
+        }
+        syllables = match->matches;
+        return true;
+    }
     // A single remaining key always offers candidates, as do an unfinished
     // final syllable and explicitly confirmed boundaries.
     // Other bare initials require the abbreviation threshold.

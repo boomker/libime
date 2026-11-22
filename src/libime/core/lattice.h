@@ -156,6 +156,7 @@ public:
     }
 
     State &state() { return state_; }
+    const State &state() const { return state_; }
 
 protected:
     SegmentGraphPath path_;

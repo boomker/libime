@@ -28,6 +28,13 @@ class PinyinContextPrivate;
 class ShuangpinProfile;
 enum class PinyinPreeditMode;
 
+/// An owned recovery hypothesis; it never refers to a temporary lattice.
+struct ShuangpinRecoveryCandidate {
+    std::string word;
+    std::string encodedPinyin;
+    size_t inputLength;
+};
+
 class LIBIMEPINYIN_EXPORT PinyinContext : public InputBuffer {
     friend class PinyinMatchState;
 
@@ -57,6 +64,14 @@ public:
     /// Undo the last confirmation at the input end, after subsequent input
     /// has been removed. Word selections must be cancelled separately.
     bool cancelSyllable();
+
+    /// Decode complete ordinary shuangpin pairs with at most two invalid pairs.
+    /// Uses the same normal-first, correction-second readings as the syllable
+    /// actions, while leaving this context and shared IME options unchanged.
+    /// Results consume the entire unselected input and are bounded to three.
+    std::vector<ShuangpinRecoveryCandidate>
+    shuangpinRecoveryCandidates(size_t limit = 3) const;
+
 
     void erase(size_t from, size_t to) override;
     void setCursor(size_t pos) override;
