@@ -3,16 +3,23 @@
  */
 #include <algorithm>
 #include <iterator>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <fcitx-utils/log.h>
 #include "libime/core/historybigram.h"
 #include "libime/core/lattice.h"
 #include "libime/core/userlanguagemodel.h"
 #include "libime/pinyin/pinyincontext.h"
+#include "libime/pinyin/pinyindecoder.h"
+#include "libime/pinyin/pinyindecoder_p.h"
+#include "testdir.h"
 #include "libime/pinyin/pinyincorrectionprofile.h"
 #include "libime/pinyin/pinyindictionary.h"
 #include "libime/pinyin/pinyinencoder.h"
@@ -48,7 +55,33 @@ void expectFirst(PinyinContext &c, const std::string &word) {
     FCITX_ASSERT(!c.candidates().empty());
     FCITX_ASSERT(c.candidates().front().toString() == word)
         << c.candidates().front().toString() << " expected " << word;
-    FCITX_ASSERT(c.candidates().size() == c.candidateSet().size());
+    std::unordered_set<std::string> identities;
+    std::unordered_set<std::string> texts;
+    for (const auto &candidate : c.candidates()) {
+        const auto text = candidate.toString();
+        const auto identity = text + "|" + c.candidateFullPinyin(candidate) + "|" +
+            std::to_string(candidate.sentence().back()->to()->index());
+        FCITX_ASSERT(identities.insert(identity).second);
+        texts.insert(text);
+    }
+    FCITX_ASSERT(texts.size() == c.candidateSet().size());
+}
+
+void expectBestAbbreviation(PinyinContext &c, const std::string &word) {
+    const auto &candidates = c.candidates();
+    const auto best = std::ranges::find_if(candidates, [&c](const auto &item) {
+        return c.isBestShuangpinAbbreviation(item);
+    });
+    FCITX_ASSERT(best != candidates.end()) << word;
+    FCITX_ASSERT(best->toString() == word) << best->toString() << " expected " << word;
+    FCITX_ASSERT(std::ranges::count_if(candidates, [&c](const auto &item) {
+        return c.isBestShuangpinAbbreviation(item);
+    }) == 1);
+    for (const auto &candidate : candidates) {
+        if (c.isShuangpinAbbreviation(candidate)) {
+            FCITX_ASSERT(candidate.score() <= best->score());
+        }
+    }
 }
 
 void choose(PinyinContext &c, const std::string &word, bool learn = true) {
@@ -68,18 +101,19 @@ void testPromotionAndLearning() {
     PinyinContext c(ime.get());
     c.setUseShuangpin(true);
     c.type("wum");
-    expectFirst(c, "为什么");
+    expectBestAbbreviation(c, "为什么");
     FCITX_ASSERT(c.candidateSet().contains("玩什么"));
-    // Clicks which are cancelled or not learned do not override preference.
+    expectFirst(c, "无名");
+    // Cancelled selections do not add learning; score order is unchanged.
     choose(c, "无名", false);
     c.type("wum");
     choose(c, "无名", false);
     c.type("wum");
-    expectFirst(c, "为什么");
+    expectBestAbbreviation(c, "为什么");
 
     choose(c, "无名");
     c.type("wum");
-    expectFirst(c, "为什么");
+    expectBestAbbreviation(c, "为什么");
     choose(c, "无名");
     c.type("wum");
     expectFirst(c, "无名");
@@ -97,7 +131,7 @@ void testPromotionAndLearning() {
     restored->model()->history().forget("无名");
     afterRestart.clear();
     afterRestart.type("wum");
-    expectFirst(afterRestart, "为什么");
+    expectBestAbbreviation(afterRestart, "为什么");
 }
 
 void testThresholdAndModes() {
@@ -110,7 +144,7 @@ void testThresholdAndModes() {
     ime->setPartialSpLength(3);
     FCITX_ASSERT(c.empty());
     c.type("wum");
-    expectFirst(c, "为什么");
+    expectBestAbbreviation(c, "为什么");
     ime->setPartialSpLength(2);
     c.type("wq");
     FCITX_ASSERT(c.candidateSet().contains("完全"));
@@ -147,9 +181,9 @@ void testCandidateLimitAndExplicitBoundaries() {
     PinyinContext c(ime.get());
     c.setUseShuangpin(true);
     c.type("wum");
-    expectFirst(c, "为什么");
-    FCITX_ASSERT(c.candidateSet().contains("无名"));
-    FCITX_ASSERT(c.candidates().size() == 2);
+    expectBestAbbreviation(c, "为什么");
+    FCITX_ASSERT(c.candidates().size() == 1);
+    FCITX_ASSERT(c.isBestShuangpinAbbreviation(c.candidates().front()));
 
     // Explicit syllable boundaries keep wu+m and its ordinary ranking.
     ime->setWordCandidateLimit(0);
@@ -169,7 +203,7 @@ void testCandidateLimitAndExplicitBoundaries() {
     ime->setPartialLongWordLimit(3);
     c.clear();
     c.type("wum");
-    expectFirst(c, "为什么");
+    expectBestAbbreviation(c, "为什么");
     FCITX_ASSERT(c.candidateSet().contains("为什么呢"));
 }
 
@@ -346,16 +380,16 @@ void testAutomaticInitialFuzzy() {
     c.type("wum");
     FCITX_ASSERT(!c.candidateSet().contains("为什么"));
 
-    // Enabling shorter partial matching still promotes the best abbreviation.
+    // Enabling shorter partial matching retains the best abbreviation.
     ime->setPartialSpLength(3);
     ime->setFuzzyFlags(PinyinFuzzyFlag::PartialSp);
     c.type("wsm");
-    expectFirst(c, "为什么");
+    expectBestAbbreviation(c, "为什么");
     FCITX_ASSERT(c.candidateSet().contains("玩什么"));
     FCITX_ASSERT(!ime->fuzzyFlags().test(PinyinFuzzyFlag::S_SH));
     c.clear();
     c.type("wum");
-    expectFirst(c, "为什么");
+    expectBestAbbreviation(c, "为什么");
 
     ime->setFuzzyFlags(PinyinFuzzyFlag::None);
     c.setUseShuangpin(false);
@@ -780,6 +814,282 @@ void testShuangpinRecoveryEditsAndOptions() {
     FCITX_ASSERT(c.shuangpinRecoveryCandidates().empty());
 }
 
+float completeScore(PinyinContext &context, const SentenceResult &candidate) {
+    auto *model = context.ime()->model();
+    State state = context.state();
+    float score = 0;
+    for (const auto *node : candidate.sentence()) {
+        State next;
+        score += model->score(state, *node, next) + node->cost();
+        state = next;
+    }
+    State next;
+    PinyinLatticeNode eos("", model->endSentence(),
+                         {candidate.sentence().back()->to(), nullptr},
+                         model->nullState(), 0, nullptr);
+    return score + model->score(state, eos, next);
+}
+
+void expectOrdinaryScoreOrder(PinyinContext &context) {
+    const auto &candidates = context.candidates();
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const auto &candidate = candidates[i];
+        if (candidate.sentence().empty()) {
+            continue;
+        }
+        if (candidate.sentence().back()->to()->index() ==
+            context.size() - context.selectedLength()) {
+            FCITX_ASSERT(std::abs(candidate.score() -
+                                  completeScore(context, candidate)) < 0.0001F);
+        }
+        if (i) {
+            FCITX_ASSERT(candidates[i - 1].score() >= candidate.score());
+        }
+    }
+}
+
+void expectCompleteRawPreedit(PinyinContext &context,
+                              std::string_view selected = {}) {
+    const auto input = context.userInput();
+    const auto selectedLength = context.selectedLength();
+    for (size_t cursor = selectedLength; cursor <= context.size(); ++cursor) {
+        context.setCursor(cursor);
+        const auto [preedit, mappedCursor] =
+            context.preeditWithCursor(PinyinPreeditMode::RawText);
+        std::string raw;
+        size_t rawCursor = 0;
+        for (size_t i = 0; i < preedit.size(); ++i) {
+            if (preedit[i] != ' ') {
+                raw += preedit[i];
+                if (i < mappedCursor) ++rawCursor;
+            }
+        }
+        FCITX_ASSERT(raw == std::string(selected) +
+                                input.substr(selectedLength)) << preedit;
+        FCITX_ASSERT(rawCursor == selected.size() + cursor - selectedLength)
+            << preedit << " cursor=" << cursor << " mapped=" << mappedCursor;
+        FCITX_ASSERT(context.userInput() == input);
+        FCITX_ASSERT(context.cursor() == cursor);
+        const auto [pinyin, pinyinCursor] =
+            context.preeditWithCursor(PinyinPreeditMode::Pinyin);
+        FCITX_ASSERT(pinyinCursor <= pinyin.size());
+        if (cursor == context.size()) {
+            FCITX_ASSERT(pinyinCursor == pinyin.size());
+        }
+    }
+}
+
+void testPartialFirstPreservesCompletePreedit() {
+    auto ime = makeIME();
+    ime->setFuzzyFlags(PinyinFuzzyFlag::None);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "ni", "你", 1000);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "hao", "好", -1000);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "ni'hao", "你好", -1000);
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    c.type("nihc");
+    FCITX_ASSERT(c.candidates().front().sentence().back()->to()->index() < c.size());
+    const auto first = c.candidates().front().toString();
+    expectCompleteRawPreedit(c);
+    FCITX_ASSERT(c.candidates().front().toString() == first);
+    c.setCursor(c.size());
+    FCITX_ASSERT(c.pinyinBeforeCursor() == 2);
+    c.setCursor(2);
+    FCITX_ASSERT(c.pinyinAfterCursor() == 4);
+    c.setMaxSentenceLength(1);
+    FCITX_ASSERT(!c.type("n"));
+    FCITX_ASSERT(c.userInput() == "nihc");
+    c.setMaxSentenceLength(-1);
+    // A limited list can contain no full path. Its uncovered suffix still
+    // renders verbatim and supports every source cursor position.
+    c.clear();
+    ime->setWordCandidateLimit(1);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "ni'hao", "你好", 1000);
+    c.type("nihcqqqq");
+    FCITX_ASSERT(std::ranges::none_of(c.candidates(), [&c](const auto &candidate) {
+        return candidate.sentence().back()->to()->index() == c.size();
+    }));
+    expectCompleteRawPreedit(c);
+    FCITX_ASSERT(c.pinyinBeforeCursor() >= 4);
+    c.setCursor(6);
+    FCITX_ASSERT(c.pinyinAfterCursor() > 6);
+    c.setCursor(c.size());
+    const auto ni = PinyinEncoder::encodeFullPinyin("ni");
+    c.selectCustom(2, "你", std::string_view(ni.data(), ni.size()));
+    expectCompleteRawPreedit(c, "你");
+
+    // Selecting the final candidate leaves the old segment graph available,
+    // but there is no remaining source input to render, navigate, or count.
+    c.clear();
+    c.type("nihc");
+    const auto nihao = PinyinEncoder::encodeFullPinyin("ni'hao");
+    c.selectCustom(4, "你好", std::string_view(nihao.data(), nihao.size()));
+    FCITX_ASSERT(c.selected());
+    for (const auto mode : {PinyinPreeditMode::RawText, PinyinPreeditMode::Pinyin}) {
+        const auto [text, cursor] = c.preeditWithCursor(mode);
+        FCITX_ASSERT(text == "你好" && cursor == text.size());
+    }
+    FCITX_ASSERT(c.pinyinBeforeCursor() == -1);
+    FCITX_ASSERT(c.pinyinAfterCursor() == -1);
+    c.setMaxSentenceLength(1);
+    FCITX_ASSERT(c.type("n"));
+    FCITX_ASSERT(c.userInput() == "nihcn");
+    expectCompleteRawPreedit(c, "你好");
+}
+
+void testBestAbbreviationAcrossLengthsAndLimits() {
+    auto ime = makeIME();
+    ime->setFuzzyFlags({PinyinFuzzyFlag::PartialSp,
+                        PinyinFuzzyFlag::DisableShuangpinInitialFuzzy});
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "wei'shen'me'ne",
+                         "为什么呢", -1);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "wan'shen'me'ne",
+                         "玩什么呢", -2);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "wei'shen'me'ne'ni",
+                         "为什么呢你", -1);
+    // A normal four-key full parse must not suppress the abbreviation reserve.
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "wu'min", "吴敏", 4);
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    for (const auto &[input, expected] :
+         {std::pair{"wum", "为什么"}, std::pair{"wumn", "为什么呢"},
+          std::pair{"wumnn", "为什么呢你"}}) {
+        c.type(input);
+        expectBestAbbreviation(c, expected);
+        expectOrdinaryScoreOrder(c);
+        c.clear();
+    }
+    ime->setWordCandidateLimit(1);
+    c.type("wumn");
+    expectBestAbbreviation(c, "为什么呢");
+    FCITX_ASSERT(c.candidates().size() == 1);
+    c.clear();
+    ime->setWordCandidateLimit(0);
+    ime->setPartialLongWordLimit(3);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "wei'shen'me'ne",
+                         "为什么呢", 10);
+    c.type("wum");
+    expectFirst(c, "为什么呢");
+    FCITX_ASSERT(!c.isShuangpinAbbreviation(c.candidates().front()));
+    expectBestAbbreviation(c, "为什么");
+    expectOrdinaryScoreOrder(c);
+
+    // Grouped profiles retain their old scoring and have no 26-key metadata.
+    const auto source = ime->shuangpinProfile();
+    std::unordered_map<char, char> identity;
+    for (char key = 'a'; key <= 'z'; ++key) identity.emplace(key, key);
+    c.setShuangpinProfile(std::make_shared<ShuangpinProfile>(*source, identity));
+    c.type("wum");
+    expectFirst(c, "为什么");
+    FCITX_ASSERT(std::ranges::none_of(c.candidates(), [&c](const auto &candidate) {
+        return c.isShuangpinAbbreviation(candidate) ||
+               c.isBestShuangpinAbbreviation(candidate);
+    }));
+}
+
+void testBestAbbreviationSurvivesAnIdenticalCompletionPath() {
+    auto ime = makeIME();
+    ime->setPartialLongWordLimit(3);
+    ime->dict()->addWord(PinyinDictionary::SystemDict,
+                         "niao'niu'nian'ning", "鸟牛年宁", 10);
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    c.type("nnnn");
+    // n/n/n/n and nn/n/n+completion have the same text and reading. Keep
+    // the higher-scoring path once, but retain its abbreviation eligibility.
+    expectBestAbbreviation(c, "鸟牛年宁");
+    FCITX_ASSERT(std::ranges::count(c.candidates(), std::string("鸟牛年宁"),
+                                    &SentenceResult::toString) == 1);
+    expectOrdinaryScoreOrder(c);
+}
+
+void testLetterMatchesAreNotShuangpinAbbreviations() {
+    auto ime = makeIME();
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "A'B'C", "ABC", 10);
+    ime->setFuzzyFlags({PinyinFuzzyFlag::PartialSp, PinyinFuzzyFlag::Letter});
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    c.type("abc");
+    FCITX_ASSERT(c.candidateSet().contains("ABC"));
+    for (const auto &candidate : c.candidates()) {
+        if (candidate.toString() == "ABC") {
+            FCITX_ASSERT(!c.isShuangpinAbbreviation(candidate));
+            FCITX_ASSERT(!c.isBestShuangpinAbbreviation(candidate));
+        }
+    }
+}
+
+void testAndroidDictionaryCompletionLearning() {
+    const auto assets = std::filesystem::path(LIBIME_SOURCE_DIR) /
+        "../../../../../../app/src/main/assets/usr/share/libime";
+    if (!std::filesystem::exists(assets / "zh_CN.lm") ||
+        !std::filesystem::exists(assets / "sc.dict")) {
+        FCITX_INFO() << "Android dictionary regression unavailable outside Android checkout";
+        return;
+    }
+    for (const auto &[input, completion, abbreviation] :
+         {std::tuple{"wum", "雾霾", "为什么"},
+          std::tuple{"vgr", "正如", "中国人"}}) {
+        auto ime = std::make_unique<PinyinIME>(
+            std::make_unique<PinyinDictionary>(),
+            std::make_unique<UserLanguageModel>((assets / "zh_CN.lm").c_str()));
+        std::ifstream dictionary(assets / "sc.dict", std::ios::binary);
+        ime->dict()->load(PinyinDictionary::SystemDict, dictionary,
+                          PinyinDictFormat::Binary);
+        ime->setShuangpinProfile(std::make_shared<ShuangpinProfile>(
+            ShuangpinBuiltinProfile::Xiaohe));
+        ime->setFuzzyFlags({PinyinFuzzyFlag::PartialSp,
+                            PinyinFuzzyFlag::DisableShuangpinInitialFuzzy});
+        ime->setPartialSpLength(3);
+        ime->setNBest(2);
+        ime->setScoreFilter(1);
+        PinyinContext c(ime.get());
+        c.setUseShuangpin(true);
+        c.type(input);
+        expectBestAbbreviation(c, abbreviation);
+        expectOrdinaryScoreOrder(c);
+        const auto before = std::ranges::find(c.candidates(), completion,
+                                              &SentenceResult::toString);
+        FCITX_ASSERT(before != c.candidates().end());
+        const auto oldScore = before->score();
+        if (std::string_view(input) == "vgr") {
+            FCITX_ASSERT(before->sentence().size() > 1);
+        }
+        choose(c, completion);
+        c.type(input);
+        expectFirst(c, completion);
+        FCITX_ASSERT(c.candidates().front().score() > oldScore);
+        expectBestAbbreviation(c, abbreviation);
+        expectOrdinaryScoreOrder(c);
+        const auto best = std::ranges::find(c.candidates(), abbreviation,
+                                            &SentenceResult::toString);
+        FCITX_ASSERT(best != c.candidates().end());
+        FCITX_ASSERT(c.candidates().front().score() > best->score());
+        // The first committed selection is sufficient; no two-use exception.
+        if (std::string_view(input) == "vgr") {
+            FCITX_ASSERT(c.ime()->model()->history().containsBigram("正", "如"));
+        }
+        c.clear();
+        auto correction = std::make_shared<PinyinCorrectionProfile>(
+            BuiltinPinyinCorrectionProfile::Qwerty);
+        ime->setCorrectionProfile(correction);
+        ime->setShuangpinProfile(std::make_shared<ShuangpinProfile>(
+            ShuangpinBuiltinProfile::Xiaohe, correction.get()));
+        ime->setFuzzyFlags({PinyinFuzzyFlag::Correction, PinyinFuzzyFlag::PartialSp});
+        c.type("fqfq");
+        expectCompleteRawPreedit(c);
+        c.clear();
+        c.type("uhfm");
+        expectCompleteRawPreedit(c);
+        const auto merchant = std::ranges::find(c.candidates(), "商",
+                                                &SentenceResult::toString);
+        FCITX_ASSERT(merchant != c.candidates().end());
+        c.select(std::distance(c.candidates().begin(), merchant));
+        FCITX_ASSERT(c.selectedLength() == 2);
+        expectCompleteRawPreedit(c, "商");
+    }
+}
+
 void testUvMappingWithoutTypos() {
     auto ime = makeIME();
     ime->dict()->addWord(PinyinDictionary::SystemDict, "yu", "鱼", 0);
@@ -811,6 +1121,11 @@ int main() {
     testAbbreviationThresholds();
     testCompletionBoundaries();
     testUvMappingWithoutTypos();
+    testPartialFirstPreservesCompletePreedit();
+    testBestAbbreviationAcrossLengthsAndLimits();
+    testAndroidDictionaryCompletionLearning();
+    testLetterMatchesAreNotShuangpinAbbreviations();
+    testBestAbbreviationSurvivesAnIdenticalCompletionPath();
     testShuangpinRecovery();
     testShuangpinRecoveryEditsAndOptions();
     testRecoveryUsesCompleteSentenceScores();

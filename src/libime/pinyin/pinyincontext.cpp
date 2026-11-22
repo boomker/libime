@@ -183,6 +183,8 @@ public:
     PinyinMatchState matchState_;
     std::vector<SentenceResult> candidates_;
     std::unordered_set<std::string> candidatesSet_;
+    std::optional<CandidateDedupByPinyin> bestAbbreviation_;
+    size_t bestAbbreviationEnd_ = 0;
     mutable bool candidatesToCursorNeedUpdate_ = true;
     mutable std::vector<SentenceResult> candidatesToCursor_;
     mutable std::unordered_set<std::string> candidatesToCursorSet_;
@@ -229,6 +231,8 @@ public:
     }
 
     void clearCandidates() {
+        bestAbbreviation_.reset();
+        bestAbbreviationEnd_ = 0;
         candidates_.clear();
         candidatesToCursor_.clear();
         candidatesToCursorNeedUpdate_ = false;
@@ -283,10 +287,64 @@ public:
         return true;
     }
 
-    std::optional<CandidateDedupByPinyin> preferredPartialShuangpin() const {
+    bool usesOrdinaryShuangpinRanking() const {
+        FCITX_Q();
+        const auto profile = q->shuangpinProfile();
+        return q->useShuangpin() && profile && !profile->isGrouped();
+    }
+
+    const SentenceResult *compositionCandidate() const {
+        FCITX_Q();
+        if (usesOrdinaryShuangpinRanking()) {
+            const auto remaining = q->size() - q->selectedLength();
+            if (!remaining) {
+                return nullptr;
+            }
+            // A prefix may win by score; composition boundaries must still
+            // follow a complete path independently of the selection order.
+            const auto full = std::ranges::find_if(
+                candidates_, [remaining](const auto &candidate) {
+                    return !candidate.sentence().empty() &&
+                           candidate.sentence().front()->from()->index() == 0 &&
+                           candidate.sentence().back()->to()->index() == remaining;
+                });
+            if (full != candidates_.end()) {
+                return &*full;
+            }
+        }
+        return candidates_.empty() ? nullptr : &candidates_.front();
+    }
+
+    bool isOrdinaryShuangpinAbbreviation(const SentenceResult &candidate) const {
+        FCITX_Q();
+        if (!usesOrdinaryShuangpinRanking() ||
+            !q->fuzzyFlags().test(PinyinFuzzyFlag::PartialSp) ||
+            ime_->partialSpLength() == 0 ||
+            segs_.size() < ime_->partialSpLength() ||
+            !selectedSyllables_.empty() || needCandidatesToCursor() ||
+            segs_.data().find('\'') != std::string::npos ||
+            hasCorrection(candidate) || !isPartialShuangpinCandidate(candidate)) {
+            return false;
+        }
+        for (const auto *node : candidate.sentence()) {
+            const auto &encoded = node->as<PinyinLatticeNode>().encodedPinyin();
+            for (size_t i = 1; i < encoded.size(); i += 2) {
+                if (PinyinEncoder::isFinalLetter(
+                        static_cast<PinyinFinal>(encoded[i]))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // Retain the existing grouped-keyboard policy. Ordinary 26-key shuangpin
+    // uses one score order and a frontend reservation instead of promotion.
+    std::optional<CandidateDedupByPinyin> preferredGroupedShuangpin() const {
         FCITX_Q();
         if (candidates_.empty() || !q->useShuangpin() ||
-            !selectedSyllables_.empty() || needCandidatesToCursor() ||
+            usesOrdinaryShuangpinRanking() || !selectedSyllables_.empty() ||
+            needCandidatesToCursor() ||
             !q->fuzzyFlags().test(PinyinFuzzyFlag::PartialSp)) {
             return std::nullopt;
         }
@@ -891,13 +949,23 @@ int PinyinContext::maxSentenceLength() const {
 
 bool PinyinContext::typeImpl(const char *s, size_t length) {
     FCITX_D();
-    if (d->maxSentenceLength_ > 0 && !d->candidates_.empty()) {
+    const auto *composition = d->compositionCandidate();
+    if (d->maxSentenceLength_ > 0 &&
+        (composition || d->usesOrdinaryShuangpinRanking())) {
         auto size = 0;
-        for (const auto &s : d->candidates_[0].sentence()) {
-            // This is pinyin length + 1
-            auto segLength = s->path().size();
-            size +=
-                std::max(static_cast<decltype(segLength)>(1), segLength) - 1;
+        size_t covered = 0;
+        if (composition) {
+            for (const auto &s : composition->sentence()) {
+                // This is pinyin length + 1
+                auto segLength = s->path().size();
+                size +=
+                    std::max(static_cast<decltype(segLength)>(1), segLength) - 1;
+                covered = s->to()->index();
+            }
+        }
+        const auto remaining = this->size() - selectedLength();
+        if (d->usesOrdinaryShuangpinRanking() && remaining > covered) {
+            size += remaining - covered;
         }
         if (size > d->maxSentenceLength_) {
             return false;
@@ -963,8 +1031,11 @@ int PinyinContext::pinyinBeforeCursor() const {
         return -1;
     }
     c -= len;
-    if (!d->candidates_.empty()) {
-        for (const auto &s : d->candidates_[0].sentence()) {
+    const auto *composition = d->compositionCandidate();
+    size_t covered = 0;
+    if (composition) {
+        for (const auto &s : composition->sentence()) {
+            covered = s->to()->index();
             for (auto iter = s->path().begin(),
                       end = std::prev(s->path().end());
                  iter < end; iter++) {
@@ -975,6 +1046,10 @@ int PinyinContext::pinyinBeforeCursor() const {
                 }
             }
         }
+    }
+    if (d->usesOrdinaryShuangpinRanking() && c > covered &&
+        c <= size() - len) {
+        return len + c - 1;
     }
     return -1;
 }
@@ -987,8 +1062,11 @@ int PinyinContext::pinyinAfterCursor() const {
         return -1;
     }
     c -= len;
-    if (!d->candidates_.empty()) {
-        for (const auto &s : d->candidates_[0].sentence()) {
+    const auto *composition = d->compositionCandidate();
+    size_t covered = 0;
+    if (composition) {
+        for (const auto &s : composition->sentence()) {
+            covered = s->to()->index();
             for (auto iter = s->path().begin(),
                       end = std::prev(s->path().end());
                  iter < end; iter++) {
@@ -999,12 +1077,31 @@ int PinyinContext::pinyinAfterCursor() const {
             }
         }
     }
+    if (d->usesOrdinaryShuangpinRanking() && c >= covered &&
+        c < size() - len) {
+        return len + c + 1;
+    }
     return -1;
 }
 
 const std::vector<SentenceResult> &PinyinContext::candidates() const {
     FCITX_D();
     return d->candidates_;
+}
+
+bool PinyinContext::isShuangpinAbbreviation(const SentenceResult &candidate) const {
+    FCITX_D();
+    return d->isOrdinaryShuangpinAbbreviation(candidate) ||
+           isBestShuangpinAbbreviation(candidate);
+}
+
+bool PinyinContext::isBestShuangpinAbbreviation(
+    const SentenceResult &candidate) const {
+    FCITX_D();
+    return d->bestAbbreviation_ &&
+           candidateSelectTo(candidate) == d->bestAbbreviationEnd_ &&
+           d->usesOrdinaryShuangpinRanking() && !d->needCandidatesToCursor() &&
+           candidateDedupByPinyin(candidate) == *d->bestAbbreviation_;
 }
 
 const std::unordered_set<std::string> &PinyinContext::candidateSet() const {
@@ -1259,9 +1356,56 @@ void PinyinContext::update() {
                 }
             }
         }
-        std::sort(d->candidates_.begin() + beginSize, d->candidates_.end(),
-                  std::greater<>());
-        const auto preferred = d->preferredPartialShuangpin();
+        const bool ordinaryShuangpin = d->usesOrdinaryShuangpinRanking();
+        if (ordinaryShuangpin) {
+            // N-best includes EOS, while appended dictionary paths used to
+            // omit it. Replay each represented path once from the same model
+            // state: this also handles N-best's alternative predecessor paths.
+            const auto endNodes = d->lattice_.nodes(nullptr);
+            if (!endNodes.empty()) {
+                const auto &eos = endNodes.front();
+                const auto distancePenalty = d->ime_->model()->unknownPenalty() /
+                                             PINYIN_DISTANCE_PENALTY_FACTOR;
+                for (auto &candidate : d->candidates_) {
+                    State current = state;
+                    float score = 0;
+                    for (const auto *node : candidate.sentence()) {
+                        State next;
+                        score += d->ime_->model()->score(current, *node, next) +
+                                 node->cost();
+                        current = next;
+                    }
+                    State afterEOS;
+                    score += d->ime_->model()->score(current, eos, afterEOS);
+                    if (!candidate.sentence().empty()) {
+                        const auto distance = graph.distanceToEnd(
+                            *candidate.sentence().back()->to());
+                        score += static_cast<float>(distance) * distancePenalty;
+                    }
+                    candidate.setScore(score);
+                }
+            }
+            std::stable_sort(d->candidates_.begin(), d->candidates_.end(),
+                             std::greater<>());
+            for (const auto &candidate : d->candidates_) {
+                if (d->isOrdinaryShuangpinAbbreviation(candidate)) {
+                    d->bestAbbreviation_ = candidateDedupByPinyin(candidate);
+                    d->bestAbbreviationEnd_ = candidateSelectTo(candidate);
+                    break;
+                }
+            }
+        } else {
+            std::sort(d->candidates_.begin() + beginSize, d->candidates_.end(),
+                      std::greater<>());
+        }
+        const auto preferred = ordinaryShuangpin
+                                   ? d->bestAbbreviation_
+                                   : d->preferredGroupedShuangpin();
+        if (ordinaryShuangpin) {
+            // A single ranked stream has no positional N-best exemption. The
+            // reserved abbreviation remains inside the configured word budget.
+            beginSize = 0;
+        }
         {
             size_t index = 0;
             size_t count = 0;
@@ -1328,7 +1472,7 @@ void PinyinContext::update() {
                 });
         }
 
-        if (preferred) {
+        if (preferred && !ordinaryShuangpin) {
             auto it = std::ranges::find_if(
                 d->candidates_, [&preferred](const auto &candidate) {
                     return candidateDedupByPinyin(candidate) == *preferred;
@@ -1404,9 +1548,12 @@ PinyinContext::preeditWithCursor(PinyinPreeditMode mode) const {
 
     auto resultSize = ss.size();
 
-    if (!d->candidates_.empty()) {
-        bool first = true;
-        for (const auto &node : d->candidates_[0].sentence()) {
+    const auto *preeditCandidate = d->compositionCandidate();
+    const bool ordinaryShuangpin = d->usesOrdinaryShuangpinRanking();
+    bool first = true;
+    size_t covered = 0;
+    if (preeditCandidate) {
+        for (const auto &node : preeditCandidate->sentence()) {
             for (auto iter = node->path().begin(),
                       end = std::prev(node->path().end());
                  iter < end; iter++) {
@@ -1418,6 +1565,7 @@ PinyinContext::preeditWithCursor(PinyinPreeditMode mode) const {
                 }
                 auto from = (*iter)->index();
                 auto to = (*std::next(iter))->index();
+                covered = to;
                 size_t cursorInPinyin = c - from - len;
                 const size_t startPivot = resultSize;
                 auto pinyin = d->segs_.segment(from, to);
@@ -1521,6 +1669,22 @@ PinyinContext::preeditWithCursor(PinyinPreeditMode mode) const {
                 }
             }
         }
+    }
+    const auto remaining = size() - len;
+    if (ordinaryShuangpin && covered < remaining) {
+        // A complete path can be absent after candidate limiting, or when the
+        // remaining input has no dictionary match. Keep that raw suffix and
+        // its cursor mapping even though it cannot contribute a candidate.
+        if (!first) {
+            ss += " ";
+            ++resultSize;
+        }
+        if (c >= len + covered) {
+            actualCursor = resultSize + c - len - covered;
+        }
+        const auto suffix = std::string_view(userInput()).substr(len + covered);
+        ss.append(suffix.data(), suffix.size());
+        resultSize += suffix.size();
     }
     if (c == size()) {
         actualCursor = resultSize;

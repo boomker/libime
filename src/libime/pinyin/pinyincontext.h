@@ -81,6 +81,13 @@ public:
 
     const std::vector<SentenceResult> &candidates() const;
 
+    /// Ordinary (non-grouped) shuangpin abbreviations that consume all input
+    /// with one key per encoded syllable. Explicit confirmations are excluded.
+    bool isShuangpinAbbreviation(const SentenceResult &candidate) const;
+    /// The highest-scoring abbreviation before the word-candidate limit, kept
+    /// for frontend homepage reservation without changing the score order.
+    bool isBestShuangpinAbbreviation(const SentenceResult &candidate) const;
+
     /**
      * Return the set of candidates, useful for deduplication.
      *
