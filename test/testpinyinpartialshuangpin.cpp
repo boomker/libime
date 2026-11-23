@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <fcitx-utils/log.h>
+#include <fcitx-utils/utf8.h>
 #include "libime/core/historybigram.h"
 #include "libime/core/lattice.h"
 #include "libime/core/userlanguagemodel.h"
@@ -1090,6 +1091,99 @@ void testAndroidDictionaryCompletionLearning() {
     }
 }
 
+void testVowelInitialShuangpinAbbreviations() {
+    auto ime = makeRecoveryIME();
+    ime->setPartialSpLength(2);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "qin'ai", "亲爱", 0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "qin'er", "亲耳", 0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "qiu'ou", "求偶", 0);
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "qi'ou", "奇偶", -1);
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    for (const auto &[keys, word] :
+         {std::pair{"qa", "亲爱"}, {"qe", "亲耳"}, {"qo", "求偶"}}) {
+        c.type(keys);
+        expectBestAbbreviation(c, word);
+        if (std::string_view(keys) == "qo") {
+            FCITX_ASSERT(c.candidateSet().contains("奇偶"));
+            choose(c, word, false);
+        } else {
+            c.clear();
+        }
+    }
+    // Vowel abbreviations obey the same switch and threshold as consonants.
+    for (const size_t minimum : {0, 3, 4}) {
+        ime->setPartialSpLength(minimum);
+        c.type("qo");
+        FCITX_ASSERT(!c.candidateSet().contains("求偶"));
+        c.clear();
+    }
+    ime->setPartialSpLength(2);
+    ime->setFuzzyFlags(PinyinFuzzyFlag::Correction);
+    c.type("qo");
+    FCITX_ASSERT(!c.candidateSet().contains("求偶"));
+}
+
+void testInvalidPairSingleCandidatesConsumeBothKeys() {
+    auto ime = makeRecoveryIME();
+    ime->setPartialSpLength(2);
+    for (const auto &[pinyin, word] :
+         {std::pair{"quan", "全"}, {"qu", "去"}, {"qian", "前"},
+          {"qi", "齐"}, {"qie", "切"}, {"wo", "我"}, {"ni", "你"}}) {
+        ime->dict()->addWord(PinyinDictionary::SystemDict, pinyin, word, 0);
+    }
+    ime->dict()->addWord(PinyinDictionary::SystemDict, "qiu'ou", "求偶", 0);
+    PinyinContext c(ime.get());
+    c.setUseShuangpin(true);
+    c.type("q");
+    FCITX_ASSERT(c.candidateSet().contains("全"));
+    c.type("o");
+    for (const auto *word : {"全", "去", "前"}) {
+        FCITX_ASSERT(!c.candidateSet().contains(word)) << word;
+    }
+    for (const auto *word : {"齐", "切", "我"}) {
+        FCITX_ASSERT(c.candidateSet().contains(word)) << word;
+    }
+    for (const auto &candidate : c.candidates()) {
+        if (fcitx::utf8::length(candidate.toString()) != 1) {
+            continue;
+        }
+        const auto pinyin = c.candidateFullPinyin(candidate);
+        FCITX_ASSERT(pinyin == "qi" || pinyin == "qie" || pinyin == "wo")
+            << candidate.toString() << " " << pinyin;
+        FCITX_ASSERT(candidate.sentence().back()->to()->index() == 2);
+    }
+    FCITX_ASSERT(c.selectSyllable(
+        0, 2, PinyinSyllable(PinyinInitial::Q, PinyinFinal::I)));
+    FCITX_ASSERT(c.candidateSet().contains("齐"));
+    FCITX_ASSERT(!c.candidateSet().contains("切"));
+    FCITX_ASSERT(!c.candidateSet().contains("我"));
+    FCITX_ASSERT(c.cancelSyllable());
+    FCITX_ASSERT(c.candidateSet().contains("我"));
+    c.backspace();
+    FCITX_ASSERT(c.userInput() == "q");
+    FCITX_ASSERT(c.candidateSet().contains("全"));
+    // A deliberately confirmed one-key boundary remains a legal selection.
+    FCITX_ASSERT(c.selectSyllable(
+        0, 1, PinyinSyllable(PinyinInitial::Q, PinyinFinal::Invalid)));
+    c.type("o");
+    FCITX_ASSERT(c.candidateSet().contains("全"));
+
+    // A confirmation retained for an already selected prefix does not
+    // constrain the still-unconfirmed remaining pair.
+    c.clear();
+    c.type("niqo");
+    FCITX_ASSERT(c.selectSyllable(
+        0, 2, PinyinSyllable(PinyinInitial::N, PinyinFinal::I)));
+    const auto prefix =
+        std::ranges::find(c.candidates(), "你", &SentenceResult::toString);
+    FCITX_ASSERT(prefix != c.candidates().end());
+    c.select(std::distance(c.candidates().begin(), prefix));
+    FCITX_ASSERT(c.selectedLength() == 2);
+    FCITX_ASSERT(!c.candidateSet().contains("全"));
+    expectBestAbbreviation(c, "求偶");
+}
+
 void testUvMappingWithoutTypos() {
     auto ime = makeIME();
     ime->dict()->addWord(PinyinDictionary::SystemDict, "yu", "鱼", 0);
@@ -1126,6 +1220,8 @@ int main() {
     testAndroidDictionaryCompletionLearning();
     testLetterMatchesAreNotShuangpinAbbreviations();
     testBestAbbreviationSurvivesAnIdenticalCompletionPath();
+    testVowelInitialShuangpinAbbreviations();
+    testInvalidPairSingleCandidatesConsumeBothKeys();
     testShuangpinRecovery();
     testShuangpinRecoveryEditsAndOptions();
     testRecoveryUsesCompleteSentenceScores();

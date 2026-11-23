@@ -321,7 +321,9 @@ public:
             !q->fuzzyFlags().test(PinyinFuzzyFlag::PartialSp) ||
             ime_->partialSpLength() == 0 ||
             segs_.size() < ime_->partialSpLength() ||
-            !selectedSyllables_.empty() || needCandidatesToCursor() ||
+            std::ranges::any_of(selectedSyllables_, [q](const auto &syllable) {
+                return syllable.to > q->selectedLength();
+            }) || needCandidatesToCursor() ||
             segs_.data().find('\'') != std::string::npos ||
             hasCorrection(candidate) || !isPartialShuangpinCandidate(candidate)) {
             return false;
@@ -897,6 +899,17 @@ bool PinyinContext::constrainSyllables(
         syllables = match->matches;
         return true;
     }
+    if (d->abbreviationEnabled_ && d->usesOrdinaryShuangpinRanking() &&
+        to - from == 1 &&
+        std::ranges::any_of(syllables, [](const auto &initial) {
+            return initial.first == PinyinInitial::Zero;
+        })) {
+        // Vowel-initial abbreviations use the same prefix matching as bare
+        // consonants: o also represents ou, a represents ai/an/ao, etc.
+        syllables = PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+            std::string_view(userInput()).substr(from, 1), *shuangpinProfile(),
+            fuzzyFlags() | PinyinFuzzyFlag::PartialFinal);
+    }
     // A single remaining key always offers candidates, as do an unfinished
     // final syllable and explicitly confirmed boundaries.
     // Other bare initials require the abbreviation threshold.
@@ -1357,6 +1370,39 @@ void PinyinContext::update() {
             }
         }
         const bool ordinaryShuangpin = d->usesOrdinaryShuangpinRanking();
+        if (ordinaryShuangpin && graph.size() == 2 && cursor() == size() &&
+            std::ranges::none_of(d->selectedSyllables_,
+                                [start](const auto &syllable) {
+                                    return syllable.to > start;
+                                }) &&
+            fuzzyFlags().test(PinyinFuzzyFlag::Correction) &&
+            std::ranges::all_of(graph.data(), [](char key) {
+                return fcitx::charutils::islower(key) || key == ';';
+            })) {
+            const auto hasCompleteSyllable = [&](PinyinFuzzyFlags flags) {
+                const auto matches =
+                    PinyinEncoder::shuangpinToSyllablesWithFuzzyFlags(
+                        graph.data(), *shuangpinProfile(), flags);
+                return std::ranges::any_of(matches, [](const auto &initial) {
+                    return initial.first != PinyinInitial::Invalid &&
+                           std::ranges::any_of(
+                               initial.second, [](const auto &final) {
+                                   return final.first != PinyinFinal::Invalid;
+                               });
+                });
+            };
+            if (!hasCompleteSyllable(
+                    fuzzyFlags().unset(PinyinFuzzyFlag::Correction)) &&
+                hasCompleteSyllable(fuzzyFlags())) {
+                // A corrected pair is one pending syllable. Single-character
+                // prefixes would ignore its second key and offer unrelated
+                // readings; complete abbreviations remain valid alternatives.
+                std::erase_if(d->candidates_, [&](const auto &candidate) {
+                    return candidateSelectTo(candidate) < graph.size() &&
+                           fcitx::utf8::length(candidate.toString()) == 1;
+                });
+            }
+        }
         if (ordinaryShuangpin) {
             // N-best includes EOS, while appended dictionary paths used to
             // omit it. Replay each represented path once from the same model
