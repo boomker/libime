@@ -700,6 +700,77 @@ void checkGroupedProfiles() {
         PinyinSyllable(PinyinInitial::K, PinyinFinal::Invalid)));
 }
 
+void checkExactGroupedKeys() {
+    const auto mapping = eighteenKeyMapping();
+    const std::string exactKeys = "!\"#$%&()*+,-./0123456789:<";
+    std::unordered_map<char, std::vector<char>> expanded;
+    for (const auto &[key, representative] : mapping) {
+        expanded[key] = {representative};
+        if (key >= 'a' && key <= 'z') {
+            expanded[key].push_back(exactKeys[key - 'a']);
+        }
+    }
+    const auto exact = [&exactKeys](char letter) {
+        return exactKeys[letter - 'a'];
+    };
+    ShuangpinProfile source(ShuangpinBuiltinProfile::Xiaohe);
+    ShuangpinProfile mixed(source, expanded);
+    const auto bi = PinyinSyllable(PinyinInitial::B, PinyinFinal::I);
+    const auto ni = PinyinSyllable(PinyinInitial::N, PinyinFinal::I);
+    FCITX_ASSERT(mixed.table().at(std::string{exact('b'), 'i'}).contains(bi));
+    FCITX_ASSERT(!mixed.table().at(std::string{exact('b'), 'i'}).contains(ni));
+    FCITX_ASSERT(mixed.table().at(std::string{exact('n'), 'i'}).contains(ni));
+    FCITX_ASSERT(!mixed.table().at(std::string{exact('n'), 'i'}).contains(bi));
+    FCITX_ASSERT(mixed.table().at(std::string{'b', exact('i')}).contains(bi));
+    FCITX_ASSERT(mixed.table().at(std::string{'b', exact('i')}).contains(ni));
+    FCITX_ASSERT(
+        !mixed.table()
+             .at(std::string{'b', exact('i')})
+             .contains(PinyinSyllable(PinyinInitial::B, PinyinFinal::O)));
+    // Exact pairs preserve the original profile, while taps retain their
+    // complete union.
+    for (const auto &[code, syllables] : source.table()) {
+        if (!std::ranges::all_of(
+                code, [](char key) { return key >= 'a' && key <= 'z'; })) {
+            continue;
+        }
+        std::string encoded;
+        for (char key : code)
+            encoded += exact(key);
+        FCITX_ASSERT(mixed.table().at(encoded) == syllables);
+    }
+    const auto keys = std::string{exact('n'), 'i', 'h', exact('c')};
+    checkSegments(
+        PinyinEncoder::parseUserShuangpin(keys, mixed, PinyinFuzzyFlag::None),
+        {{keys.substr(0, 2), keys.substr(2)}});
+    for (char key : source.validInput()) {
+        if (key >= 'a' && key <= 'z')
+            FCITX_ASSERT(mixed.validInput().contains(exact(key)));
+    }
+    for (char key : source.validInitial()) {
+        if (key >= 'a' && key <= 'z')
+            FCITX_ASSERT(mixed.validInitial().contains(exact(key)));
+    }
+    // Every letter has an exact input code, even when it cannot start a
+    // source syllable. The frontend must not gate directional input on
+    // validInitial(), which describes syllables rather than editable text.
+    bool hasNonInitial = false;
+    for (auto builtin :
+         {ShuangpinBuiltinProfile::Xiaohe, ShuangpinBuiltinProfile::MS,
+          ShuangpinBuiltinProfile::Ziranma, ShuangpinBuiltinProfile::ABC,
+          ShuangpinBuiltinProfile::Ziguang,
+          ShuangpinBuiltinProfile::Zhongwenzhixing,
+          ShuangpinBuiltinProfile::PinyinJiajia, ShuangpinBuiltinProfile::GB}) {
+        ShuangpinProfile base(builtin);
+        ShuangpinProfile projected(base, expanded);
+        for (char letter = 'a'; letter <= 'z'; ++letter) {
+            FCITX_ASSERT(projected.validInput().contains(exact(letter)));
+            hasNonInitial |= !projected.validInitial().contains(exact(letter));
+        }
+    }
+    FCITX_ASSERT(hasNonInitial);
+}
+
 } // namespace
 
 int main() {
@@ -734,6 +805,7 @@ int main() {
     checkAdvanceParsing2();
     checkGroupedProfiles();
     checkGroupedCorrectionPrecedence();
+    checkExactGroupedKeys();
 
     return 0;
 }

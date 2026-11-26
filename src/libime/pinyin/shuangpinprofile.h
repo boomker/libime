@@ -12,6 +12,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <fcitx-utils/macros.h>
 #include <libime/pinyin/libimepinyin_export.h>
 #include <libime/pinyin/pinyincorrectionprofile.h>
@@ -54,6 +55,10 @@ public:
      */
     ShuangpinProfile(const ShuangpinProfile &source,
                      const std::unordered_map<char, char> &keyMapping);
+    /// Project each source key onto multiple interchangeable input codes.
+    ShuangpinProfile(
+        const ShuangpinProfile &source,
+        const std::unordered_map<char, std::vector<char>> &keyMapping);
 
     FCITX_DECLARE_VIRTUAL_DTOR_COPY_AND_MOVE(ShuangpinProfile)
 

@@ -498,54 +498,71 @@ ShuangpinProfile::ShuangpinProfile(
 ShuangpinProfile::ShuangpinProfile(
     const ShuangpinProfile &source,
     const std::unordered_map<char, char> &keyMapping)
+    : ShuangpinProfile(source, [&keyMapping] {
+          std::unordered_map<char, std::vector<char>> expanded;
+          for (const auto &[key, mapped] : keyMapping) {
+              expanded.emplace(key, std::vector<char>{mapped});
+          }
+          return expanded;
+      }()) {}
+
+ShuangpinProfile::ShuangpinProfile(
+    const ShuangpinProfile &source,
+    const std::unordered_map<char, std::vector<char>> &keyMapping)
     : d_ptr(std::make_unique<ShuangpinProfilePrivate>()) {
     FCITX_D();
     d->name_ = source.name();
     d->grouped_ = true;
     for (const auto &[input, syllables] : source.table()) {
-        std::string mapped;
+        std::vector<std::string> mapped{""};
         for (char key : input) {
             auto iter = keyMapping.find(key);
             if (iter == keyMapping.end()) {
+                mapped.clear();
                 break;
             }
-            mapped.push_back(iter->second);
+            std::vector<std::string> next;
+            for (const auto &prefix : mapped) {
+                for (char alternative : iter->second) {
+                    next.push_back(prefix + alternative);
+                }
+            }
+            mapped = std::move(next);
         }
-        if (mapped.size() != input.size()) {
-            continue;
-        }
-        auto &result = d->spTable_[mapped];
-        for (const auto &[syllable, flags] : syllables) {
-            auto [begin, end] = result.equal_range(syllable);
-            // A correction may be visited before the exact spelling when
-            // different source keys collapse onto the same grouped key.
-            if (flags == PinyinFuzzyFlag::None) {
-                if (begin == end) {
-                    result.emplace(syllable, flags);
-                } else if (begin->second != PinyinFuzzyFlag::None) {
-                    result.erase(syllable);
+        for (const auto &code : mapped) {
+            auto &result = d->spTable_[code];
+            for (const auto &[syllable, flags] : syllables) {
+                auto [begin, end] = result.equal_range(syllable);
+                // A correction may be visited before the exact spelling when
+                // different source keys collapse onto the same grouped key.
+                if (flags == PinyinFuzzyFlag::None) {
+                    if (begin == end) {
+                        result.emplace(syllable, flags);
+                    } else if (begin->second != PinyinFuzzyFlag::None) {
+                        result.erase(syllable);
+                        result.emplace(syllable, flags);
+                    }
+                    continue;
+                }
+                if (begin != end && begin->second == PinyinFuzzyFlag::None) {
+                    continue;
+                }
+                if (std::none_of(begin, end, [flags](const auto &item) {
+                        return item.second == flags;
+                    })) {
                     result.emplace(syllable, flags);
                 }
-                continue;
-            }
-            if (begin != end && begin->second == PinyinFuzzyFlag::None) {
-                continue;
-            }
-            if (std::none_of(begin, end, [flags](const auto &item) {
-                    return item.second == flags;
-                })) {
-                result.emplace(syllable, flags);
             }
         }
     }
     for (char key : source.validInput()) {
         if (auto iter = keyMapping.find(key); iter != keyMapping.end()) {
-            d->validInputs_.insert(iter->second);
+            d->validInputs_.insert(iter->second.begin(), iter->second.end());
         }
     }
     for (char key : source.validInitial()) {
         if (auto iter = keyMapping.find(key); iter != keyMapping.end()) {
-            d->validInitials_.insert(iter->second);
+            d->validInitials_.insert(iter->second.begin(), iter->second.end());
         }
     }
 }
