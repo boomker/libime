@@ -16,11 +16,14 @@ namespace libime {
 
 class PinyinLatticeNodePrivate : public LatticeNodeData {
 public:
-    PinyinLatticeNodePrivate(std::string_view encodedPinyin, bool isCorrection)
-        : encodedPinyin_(encodedPinyin), isCorrection_(isCorrection) {}
+    PinyinLatticeNodePrivate(std::string_view encodedPinyin, bool isCorrection,
+                             bool isPartialLongWordCompletion)
+        : encodedPinyin_(encodedPinyin), isCorrection_(isCorrection),
+          isPartialLongWordCompletion_(isPartialLongWordCompletion) {}
 
     std::string encodedPinyin_;
     bool isCorrection_ = false;
+    bool isPartialLongWordCompletion_ = false;
 };
 
 class PinyinWordNode : public WordNode {

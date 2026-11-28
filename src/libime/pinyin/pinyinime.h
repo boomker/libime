@@ -41,6 +41,8 @@ public:
     void setFrameSize(size_t n);
     size_t partialLongWordLimit() const;
     void setPartialLongWordLimit(size_t n);
+    size_t partialLongWordCandidateLimit() const;
+    void setPartialLongWordCandidateLimit(size_t n);
     /**
      * \brief Minimum number of keys before partial shuangpin is allowed.
      *

@@ -97,6 +97,46 @@ void choose(PinyinContext &c, const std::string &word, bool learn = true) {
     c.clear();
 }
 
+size_t partialLongWordCompletionCount(const PinyinContext &context) {
+    return std::ranges::count_if(
+        context.candidates(), [](const auto &candidate) {
+            return std::ranges::any_of(
+                candidate.sentence(), [](const auto *node) {
+                    return node->template as<PinyinLatticeNode>()
+                        .isPartialLongWordCompletion();
+                });
+        });
+}
+
+void testPartialLongWordCandidateLimit() {
+    auto ime = makeIME();
+    ime->setPartialLongWordLimit(3);
+    ime->setWordCandidateLimit(0);
+    FCITX_ASSERT(ime->partialLongWordCandidateLimit() == 7);
+    ime->setPartialLongWordCandidateLimit(2);
+    for (const auto &[suffix, word] :
+         {std::pair{"ne", "为什么呢"}, std::pair{"ba", "为什么吧"},
+          std::pair{"le", "为什么了"}, std::pair{"ma", "为什么吗"},
+          std::pair{"ni", "为什么你"}, std::pair{"a", "为什么啊"},
+          std::pair{"de", "为什么的"}, std::pair{"guo", "为什么过"}}) {
+        ime->dict()->addWord(PinyinDictionary::SystemDict,
+                             std::string("wei'shen'me'") + suffix, word, 0);
+    }
+
+    PinyinContext context(ime.get());
+    context.setUseShuangpin(true);
+    context.type("wum");
+    FCITX_ASSERT(partialLongWordCompletionCount(context) == 2);
+    FCITX_ASSERT(context.candidateSet().contains("无名"));
+    FCITX_ASSERT(context.candidateSet().contains("为什么"));
+
+    ime->setPartialLongWordCandidateLimit(0);
+    context.clear();
+    context.type("wum");
+    FCITX_ASSERT(partialLongWordCompletionCount(context) == 0);
+    FCITX_ASSERT(context.candidateSet().contains("无名"));
+}
+
 void testPromotionAndLearning() {
     auto ime = makeIME();
     PinyinContext c(ime.get());
@@ -1205,6 +1245,7 @@ void testUvMappingWithoutTypos() {
 } // namespace
 
 int main() {
+    testPartialLongWordCandidateLimit();
     testPromotionAndLearning();
     testThresholdAndModes();
     testBounds();

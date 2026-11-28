@@ -40,6 +40,10 @@ bool PinyinLatticeNode::isCorrection() const {
     return d_ptr->isCorrection_;
 }
 
+bool PinyinLatticeNode::isPartialLongWordCompletion() const {
+    return d_ptr && d_ptr->isPartialLongWordCompletion_;
+}
+
 bool PinyinLatticeNode::anyCorrectionOnPath() const {
     const auto *pivot = this;
     while (pivot) {

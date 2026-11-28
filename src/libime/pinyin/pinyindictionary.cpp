@@ -449,7 +449,8 @@ bool PinyinDictionaryPrivate::matchWordsForOnePath(
                             float cost, bool isCorrection) {
         context.callback_(path.path_, word, cost,
                           std::make_unique<PinyinLatticeNodePrivate>(
-                              encodedPinyin, isCorrection));
+                              encodedPinyin, isCorrection,
+                              encodedPinyin.size() / 2 > path.size()));
         if (path.size() == 1 &&
             path.path_[path.path_.size() - 2] == &prevNode) {
             matched = true;

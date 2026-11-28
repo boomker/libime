@@ -1455,7 +1455,10 @@ void PinyinContext::update() {
         {
             size_t index = 0;
             size_t count = 0;
+            size_t partialLongWordCompletionCount = 0;
             const auto limit = d->ime_->wordCandidateLimit();
+            const auto partialLongWordCandidateLimit =
+                d->ime_->partialLongWordCandidateLimit();
             // Reserve one ordinary word slot for the preferred candidate,
             // while retaining the original n-best exemptions.
             bool reservePreferred =
@@ -1476,8 +1479,9 @@ void PinyinContext::update() {
             std::erase_if(
                 d->candidates_,
                 [&candidatesSet, &duplicateByPinyin, &duplicateByRange, &index,
-                 &count, &reservePreferred, &preferred, beginSize,
-                 limit](const SentenceResult &candidate) {
+                 &count, &partialLongWordCompletionCount, &reservePreferred,
+                 &preferred, beginSize, limit, partialLongWordCandidateLimit](
+                    const SentenceResult &candidate) {
                     bool beforeBeginSize = index++ < beginSize;
                     auto byPinyin = candidateDedupByPinyin(candidate);
                     if (duplicateByPinyin.contains(byPinyin)) {
@@ -1487,6 +1491,19 @@ void PinyinContext::update() {
                     if (duplicateByRange.contains(byRange) &&
                         hasCorrection(candidate)) {
                         return true;
+                    }
+                    const bool isPartialLongWordCompletion =
+                        std::ranges::any_of(
+                            candidate.sentence(), [](const auto *node) {
+                                return node->template as<PinyinLatticeNode>()
+                                    .isPartialLongWordCompletion();
+                            });
+                    if (isPartialLongWordCompletion) {
+                        if (partialLongWordCompletionCount >=
+                            partialLongWordCandidateLimit) {
+                            return true;
+                        }
+                        partialLongWordCompletionCount++;
                     }
 
                     if (!beforeBeginSize && limit) {

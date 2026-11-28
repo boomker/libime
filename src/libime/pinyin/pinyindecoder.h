@@ -29,6 +29,7 @@ public:
 
     const std::string &encodedPinyin() const;
     bool isCorrection() const;
+    bool isPartialLongWordCompletion() const;
     bool anyCorrectionOnPath() const;
 
 private:
